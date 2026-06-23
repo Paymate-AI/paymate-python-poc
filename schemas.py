@@ -13,3 +13,9 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     action: Optional[Dict[str, Any]] = None
+
+
+class WhatsAppMessage(BaseModel):
+    from_number: str
+    message_body: str
+    business_id: str
