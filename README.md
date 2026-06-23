@@ -93,7 +93,7 @@ gcloud run deploy whatsapp-ai-service \
 * **Description**: Basic health check to verify the service is running.
 * **Response**: `{"status": "ok"}`
 
-### `POST /ai/chat`
+### `POST /bot`
 * **Description**: Triggers chat inference using Gemini with conversation context.
 * **Headers**:
   * `X-Internal-Secret`: (Required) Must match `INTERNAL_SECRET` env var.
