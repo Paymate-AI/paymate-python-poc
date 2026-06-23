@@ -15,7 +15,7 @@ app = FastAPI(
 )
 
 # Register routes
-app.include_router(ai_router, prefix="/ai")
+app.include_router(ai_router)
 
 @app.get("/health")
 def health_check():
