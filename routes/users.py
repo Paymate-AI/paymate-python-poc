@@ -7,7 +7,13 @@ from dependencies import get_user_service
 router = APIRouter(prefix="/users", tags=["Users"])
 
 
-@router.post("", response_model=UserResponse, status_code=201)
+@router.post(
+    "",
+    response_model=UserResponse,
+    status_code=201,
+    summary="Create a new user",
+    description="Create a new user with business_id, name, location, service, and business_name"
+)
 async def create_user(
     user: UserCreate,
     user_service: Annotated[UserService, Depends(get_user_service)]
@@ -18,7 +24,12 @@ async def create_user(
     return user_service.create_user(user)
 
 
-@router.get("", response_model=List[UserResponse])
+@router.get(
+    "",
+    response_model=List[UserResponse],
+    summary="Get all users",
+    description="Get a list of all users with pagination (skip and limit parameters)"
+)
 async def get_users(
     user_service: Annotated[UserService, Depends(get_user_service)],
     skip: int = 0,
@@ -27,7 +38,12 @@ async def get_users(
     return user_service.get_all_users(skip, limit)
 
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get(
+    "/{user_id}",
+    response_model=UserResponse,
+    summary="Get a user by ID",
+    description="Get a single user's information by their user ID"
+)
 async def get_user(
     user_id: int,
     user_service: Annotated[UserService, Depends(get_user_service)]

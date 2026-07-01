@@ -1,20 +1,26 @@
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from typing import Annotated
 from sqlalchemy.orm import Session
 from database.config import get_db
 from schemas.payment import PaymentResponse
 from services.payment_service import PaymentService
 from services.order_service import OrderService
+from services.alatpay_service import BadRequestError
 from dependencies import get_payment_service, get_order_service
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
 
-@router.post("/order/{order_id}", response_model=PaymentResponse, status_code=201)
+@router.post(
+    "/order/{order_id}",
+    response_model=PaymentResponse,
+    status_code=201,
+    summary="Create payment and generate virtual account",
+    description="Create a new payment for an order and generate a virtual account via ALATPay"
+)
 async def create_payment(
     order_id: int,
-    background_tasks: BackgroundTasks,
     payment_service: Annotated[PaymentService, Depends(get_payment_service)],
     order_service: Annotated[OrderService, Depends(get_order_service)]
 ):
@@ -24,17 +30,25 @@ async def create_payment(
 
     payment = payment_service.create_payment(order_id, order.total_amount)
 
-    # Generate virtual account in background
-    background_tasks.add_task(
-        payment_service.generate_payment_virtual_account,
-        payment.id,
-        f"Customer-{order.customer_id}"
-    )
+    try:
+        payment = await payment_service.generate_payment_virtual_account(
+            payment.id,
+            f"Customer-{order.customer_id}"
+        )
+    except BadRequestError:
+        raise HTTPException(status_code=400, detail="Invalid request to generate virtual account")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to generate virtual account after multiple attempts")
 
     return payment
 
 
-@router.post("/verify/{reference}", response_model=PaymentResponse)
+@router.post(
+    "/verify/{reference}",
+    response_model=PaymentResponse,
+    summary="Verify a payment",
+    description="Verify payment status via ALATPay using the payment reference"
+)
 async def verify_payment(
     reference: str,
     payment_service: Annotated[PaymentService, Depends(get_payment_service)]
@@ -45,7 +59,12 @@ async def verify_payment(
     return payment
 
 
-@router.get("/reference/{reference}", response_model=PaymentResponse)
+@router.get(
+    "/reference/{reference}",
+    response_model=PaymentResponse,
+    summary="Get a payment by reference",
+    description="Get payment information using the payment reference"
+)
 async def get_payment(
     reference: str,
     payment_service: Annotated[PaymentService, Depends(get_payment_service)]

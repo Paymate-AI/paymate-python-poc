@@ -7,7 +7,7 @@ from google.genai import types
 import schemas
 
 router = APIRouter()
-# client = genai.Client()
+client = genai.Client()
 
 BACKEND_SERVICE_URL = os.getenv("BACKEND_SERVICE_URL", "http://localhost:8000/api")
 

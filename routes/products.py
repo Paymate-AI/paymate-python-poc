@@ -7,7 +7,13 @@ from dependencies import get_product_service
 router = APIRouter(prefix="/products", tags=["Products"])
 
 
-@router.post("", response_model=ProductResponse, status_code=201)
+@router.post(
+    "",
+    response_model=ProductResponse,
+    status_code=201,
+    summary="Create a new product",
+    description="Create a new product with business_id, name, description, price, stock_quantity, and is_active"
+)
 async def create_product(
     product: ProductCreate,
     product_service: Annotated[ProductService, Depends(get_product_service)]
@@ -15,7 +21,12 @@ async def create_product(
     return product_service.create_product(product)
 
 
-@router.get("/{product_id}", response_model=ProductResponse)
+@router.get(
+    "/{product_id}",
+    response_model=ProductResponse,
+    summary="Get a product by ID",
+    description="Get a single product's information by its ID"
+)
 async def get_product(
     product_id: int,
     product_service: Annotated[ProductService, Depends(get_product_service)]
@@ -26,7 +37,12 @@ async def get_product(
     return product
 
 
-@router.get("/business/{business_id}", response_model=List[ProductResponse])
+@router.get(
+    "/business/{business_id}",
+    response_model=List[ProductResponse],
+    summary="Get all products by business",
+    description="Get all products for a specific business with pagination"
+)
 async def get_products_by_business(
     product_service: Annotated[ProductService, Depends(get_product_service)],
     business_id: str,
@@ -36,17 +52,27 @@ async def get_products_by_business(
     return product_service.get_products_by_business(business_id, skip, limit)
 
 
-@router.get("/business/{business_id}/available", response_model=List[ProductResponse])
+@router.get(
+    "/business/{business_id}/available",
+    response_model=List[ProductResponse],
+    summary="Get available products",
+    description="Get all active products with stock > 0 for a specific business"
+)
 async def get_available_products(
     product_service: Annotated[ProductService, Depends(get_product_service)],
     business_id: str,
     skip: int = 0,
-    limit: int = 100
+    limit: int = 100,
 ):
     return product_service.get_available_products(business_id, skip, limit)
 
 
-@router.get("/business/{business_id}/out-of-stock", response_model=List[ProductResponse])
+@router.get(
+    "/business/{business_id}/out-of-stock",
+    response_model=List[ProductResponse],
+    summary="Get out-of-stock products",
+    description="Get all active products with stock = 0 for a specific business"
+)
 async def get_out_of_stock_products(
     product_service: Annotated[ProductService, Depends(get_product_service)],
     business_id: str,
@@ -56,7 +82,12 @@ async def get_out_of_stock_products(
     return product_service.get_out_of_stock_products(business_id, skip, limit)
 
 
-@router.put("/{product_id}", response_model=ProductResponse)
+@router.put(
+    "/{product_id}",
+    response_model=ProductResponse,
+    summary="Update a product",
+    description="Update an existing product's information"
+)
 async def update_product(
     product_service: Annotated[ProductService, Depends(get_product_service)],
     product_id: int,
