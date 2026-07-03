@@ -1,24 +1,32 @@
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+from schemas.business import BusinessResponse
 
 
-class UserBase(BaseModel):
-    business_id: str
+class UserCreate(BaseModel):
     name: str
-    location: str
-    service: str
-    business_name: str
+    phone: Optional[str] = None
 
 
-class UserCreate(UserBase):
-    pass
+class UserWithBusinessCreate(BaseModel):
+    user: UserCreate
+    business: "BusinessCreate"
 
 
-class UserResponse(UserBase):
+class UserResponse(BaseModel):
     id: int
+    name: str
+    phone: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    business: Optional[BusinessResponse] = None
 
     class Config:
         from_attributes = True
+
+
+# Import BusinessCreate at the bottom to avoid circular import issues
+from schemas.business import BusinessCreate
+UserWithBusinessCreate.model_rebuild()
+

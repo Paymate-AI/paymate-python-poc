@@ -30,7 +30,7 @@ class OrderService:
 
         db_order = Order(
             business_id=order_data.business_id,
-            customer_id=order_data.customer_id,
+            customer_name=order_data.customer_name,
             total_amount=total_amount,
             items=order_items
         )
@@ -42,6 +42,9 @@ class OrderService:
 
     def get_order(self, order_id: int) -> Order | None:
         return self.db.query(Order).filter(Order.id == order_id).first()
+    
+    def get_orders(self) -> list[Order] | None:
+        return self.db.query(Order).all()
 
     def update_order_status(self, order_id: int, status: str) -> Order | None:
         db_order = self.get_order(order_id)
@@ -64,3 +67,5 @@ class OrderService:
             )
 
         self.db.commit()
+
+    

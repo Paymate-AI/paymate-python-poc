@@ -26,34 +26,31 @@ class ALATPayService:
             retry_if_not_exception_type(BadRequestError)
         )
     )
-    async def generate_virtual_account(amount: float, reference: str, customer_name: str, email: str = "") -> dict:
+    async def generate_virtual_account(order_id: int, amount: float, reference: str, customer_name: str, ) -> dict:
         """Generate virtual account number via ALATPay API with retries"""
-        url = f"{ALATPayService.BASE_URL}/v1/bankTransfer/virtual-account"
+        url = f"{ALATPayService.BASE_URL}/bank-transfer/api/v1/bankTransfer/virtualAccount"
         headers = {
             "Ocp-Apim-Subscription-Key": ALATPayService.API_KEY,
             "Content-Type": "application/json"
         }
         payload = {
             "businessId": ALATPayService.MERCHANT_ID,
-            "amount": 100,
+            "amount": amount,
             "currency": "NGN",
-            "orderId": "1a345bcd01",
+            "orderId": order_id,
             "description": "ALATPay Checkout Payment",
             "customer": {
-                "email": "johndoe@email.com",
-                "phone": "08000000001",
-                "firstName": "John",
-                "lastName": "Doe",
-                "metadata": "{‘OtherName’:’Williams’}"
+                "name": customer_name
             }
         }
 
         async with httpx.AsyncClient() as httpx_client:
             try:
-                response = await httpx_client.get(url, headers=headers, timeout=5.0)
+                response = await httpx_client.post(url, headers=headers, json=payload, timeout=10.0)
                 response.raise_for_status()  # Raise HTTP errors
                 alat_response = response.json()
             except httpx.HTTPStatusError as e:
+                print(f"HTTP error: {e}")
                 if e.response.status_code == 400:
                     # Stop immediately for Bad Request
                     raise BadRequestError("Bad Request to ALATPay API") from e
@@ -63,7 +60,7 @@ class ALATPayService:
                 raise  # Re-raise to retry
 
         return {
-            "account_number": alat_response.get("virtualAccountNumber", ""),
+            "account_number": alat_response["data"].get("virtualBankAccountNumber", ""),
             "account_name": customer_name,
             "bank_name": "Wema Bank",
             "reference": reference,

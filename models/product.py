@@ -8,7 +8,7 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
-    business_id = Column(String, ForeignKey("users.business_id"), nullable=False, index=True)
+    business_id = Column(String, ForeignKey("businesses.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(String)
     price = Column(Float, nullable=False)
@@ -17,4 +17,6 @@ class Product(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    business = relationship("Business", back_populates="products")
     order_items = relationship("OrderItem", back_populates="product")
+

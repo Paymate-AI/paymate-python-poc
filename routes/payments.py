@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Annotated
 from sqlalchemy.orm import Session
@@ -9,12 +10,14 @@ from services.order_service import OrderService
 from services.alatpay_service import BadRequestError
 from dependencies import get_payment_service, get_order_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
 
 @router.post(
     "/order/{order_id}",
-    response_model=PaymentResponse,
+    # response_model=PaymentResponse,
     status_code=201,
     summary="Create payment and generate virtual account",
     description="Create a new payment for an order and generate a virtual account via ALATPay"
@@ -24,21 +27,26 @@ async def create_payment(
     payment_service: Annotated[PaymentService, Depends(get_payment_service)],
     order_service: Annotated[OrderService, Depends(get_order_service)]
 ):
-    order = order_service.get_order(order_id)
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    payment = payment_service.create_payment(order_id, order.total_amount)
-
     try:
+        order = order_service.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        payment = payment_service.create_payment(order_id, order.total_amount)
+
+    
         payment = await payment_service.generate_payment_virtual_account(
             payment.id,
-            f"Customer-{order.customer_id}"
+            order.customer_name or "Customer"
         )
-    except BadRequestError:
+    except BadRequestError as e:
+
+        print(e)
         raise HTTPException(status_code=400, detail="Invalid request to generate virtual account")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to generate virtual account after multiple attempts")
+    except Exception as e:
+        logger.error("An unexpected error occurred", exc_info=True)
+        print(f"[ERROR] Connection failed permanently after retries. Root Cause: {e.__cause__}")
+        raise HTTPException(status_code=500, detail="Failed to generate virtual account")
 
     return payment
 

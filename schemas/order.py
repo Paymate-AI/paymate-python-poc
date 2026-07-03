@@ -22,7 +22,7 @@ class OrderItemResponse(OrderItemBase):
 
 class OrderBase(BaseModel):
     business_id: str
-    customer_id: str
+    customer_name: Optional[str] = None
 
 
 class OrderCreate(OrderBase):

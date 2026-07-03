@@ -12,7 +12,7 @@ router = APIRouter(prefix="/products", tags=["Products"])
     response_model=ProductResponse,
     status_code=201,
     summary="Create a new product",
-    description="Create a new product with business_id, name, description, price, stock_quantity, and is_active"
+    description="Create a new product with business_id (integer), name, description, price, stock_quantity, and is_active"
 )
 async def create_product(
     product: ProductCreate,
@@ -41,7 +41,7 @@ async def get_product(
     "/business/{business_id}",
     response_model=List[ProductResponse],
     summary="Get all products by business",
-    description="Get all products for a specific business with pagination"
+    description="Get all products for a specific business (by integer ID) with pagination"
 )
 async def get_products_by_business(
     product_service: Annotated[ProductService, Depends(get_product_service)],
@@ -97,3 +97,4 @@ async def update_product(
     if not updated_product:
         raise HTTPException(status_code=404, detail="Product not found")
     return updated_product
+

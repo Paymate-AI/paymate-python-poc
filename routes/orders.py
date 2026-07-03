@@ -38,3 +38,16 @@ async def get_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+
+@router.get(
+    "",
+    response_model=list[OrderResponse],
+    summary="Get all orders",
+    description="Get all orders in the system"
+)
+async def get_orders(
+    order_service: Annotated[OrderService, Depends(get_order_service)]
+):
+    orders = order_service.get_orders()
+    return orders

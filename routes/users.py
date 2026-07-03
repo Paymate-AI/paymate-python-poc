@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Annotated
-from schemas.user import UserCreate, UserResponse
+from schemas.user import UserResponse, UserWithBusinessCreate
 from services.user_service import UserService
 from dependencies import get_user_service
 
@@ -8,19 +8,30 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 
 @router.post(
+    "/with-business",
+    response_model=UserResponse,
+    status_code=201,
+    summary="Create a new user with a business",
+    description="Create a new user and their associated business in one request"
+)
+async def create_user_with_business(
+    data: UserWithBusinessCreate,
+    user_service: Annotated[UserService, Depends(get_user_service)]
+):
+    return user_service.create_user_with_business(data)
+
+
+@router.post(
     "",
     response_model=UserResponse,
     status_code=201,
-    summary="Create a new user",
-    description="Create a new user with business_id, name, location, service, and business_name"
+    summary="Create a new user (without business)",
+    description="Create a new user with name and phone (business will need to be created separately"
 )
 async def create_user(
-    user: UserCreate,
+    user: "UserCreate",
     user_service: Annotated[UserService, Depends(get_user_service)]
 ):
-    existing_user = user_service.get_user_by_business_id(user.business_id)
-    if existing_user:
-        raise HTTPException(status_code=400, detail="User with this business_id already exists")
     return user_service.create_user(user)
 
 
@@ -33,7 +44,7 @@ async def create_user(
 async def get_users(
     user_service: Annotated[UserService, Depends(get_user_service)],
     skip: int = 0,
-    limit: int = 100
+    limit: int = 10
 ):
     return user_service.get_all_users(skip, limit)
 
@@ -52,3 +63,8 @@ async def get_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
+
+
+# Import UserCreate at the bottom to avoid circular imports
+from schemas.user import UserCreate
+

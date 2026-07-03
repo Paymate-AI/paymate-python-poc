@@ -17,17 +17,17 @@ class ProductService:
     def get_product(self, product_id: int) -> Product | None:
         return self.db.query(Product).filter(Product.id == product_id).first()
 
-    def get_products_by_business(self, business_id: str, skip: int = 0, limit: int = 100) -> list[Product]:
+    def get_products_by_business(self, business_id: int, skip: int = 0, limit: int = 100) -> list[Product]:
         return self.db.query(Product).filter(Product.business_id == business_id).offset(skip).limit(limit).all()
 
-    def get_available_products(self, business_id: str, skip: int = 0, limit: int = 100) -> list[Product]:
+    def get_available_products(self, business_id: int, skip: int = 0, limit: int = 100) -> list[Product]:
         return self.db.query(Product).filter(
             Product.business_id == business_id,
             Product.is_active == True,
             Product.stock_quantity > 0
         ).offset(skip).limit(limit).all()
 
-    def get_out_of_stock_products(self, business_id: str, skip: int = 0, limit: int = 100) -> list[Product]:
+    def get_out_of_stock_products(self, business_id: int, skip: int = 0, limit: int = 100) -> list[Product]:
         return self.db.query(Product).filter(
             Product.business_id == business_id,
             Product.is_active == True,
@@ -56,3 +56,4 @@ class ProductService:
         self.db.commit()
         self.db.refresh(db_product)
         return db_product
+
