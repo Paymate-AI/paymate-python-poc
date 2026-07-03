@@ -1,3 +1,4 @@
+import logging
 import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -6,6 +7,8 @@ from services.alatpay_service import ALATPayService
 from services.order_service import OrderService
 from datetime import datetime, timedelta
 
+
+logger = logging.getLogger(__name__)
 
 class PaymentService:
     def __init__(self, db: Session):
@@ -41,14 +44,14 @@ class PaymentService:
             reference=db_payment.reference,
             customer_name=customer_name
         )
-
+        db_payment.transaction_id = alatpay_response.pop("transaction_id")
         # Create virtual account record
         expiry_date = datetime.now() + timedelta(minutes=alatpay_response.get("expiry_minutes", 60))
         try:
             db_virtual_account = VirtualAccount(
                 payment_id=payment_id,
                 account_number=alatpay_response["account_number"],
-                account_name=alatpay_response["account_name"],
+                account_name=alatpay_response["customer_name"],
                 bank_name=alatpay_response["bank_name"],
                 expiry_date=expiry_date
             )
@@ -66,9 +69,10 @@ class PaymentService:
             return None
 
         # Verify with ALATPay
-        verification = await ALATPayService.verify_payment(reference)
+        verification = await ALATPayService.verify_payment(db_payment.transaction_id)
 
         if verification["status"] == "successful":
+            logger.info(f"Payment verification called for reference: {reference}")
             db_payment.status = "successful"
             db_payment.gateway_response = str(verification)
 

@@ -8,14 +8,14 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("orders.id"), unique=True, nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"), unique=False, nullable=False)
     amount = Column(Float, nullable=False)
     reference = Column(String, unique=True, nullable=False)
     status = Column(String, default="pending")  # pending, successful, failed
     gateway_response = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
+    transaction_id = Column(String, unique=True, nullable=True)
     order = relationship("Order", back_populates="payment")
     virtual_account = relationship("VirtualAccount", back_populates="payment", uselist=False)
 
