@@ -1,3 +1,4 @@
+import logging
 import os
 from fastapi import HTTPException
 import httpx
@@ -5,6 +6,8 @@ from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, retry_if_exception_type, retry_if_not_exception_type
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 # Custom exception for Bad Request (400) that we don't want to retry
@@ -37,7 +40,7 @@ class ALATPayService:
             "businessId": ALATPayService.MERCHANT_ID,
             "amount": amount,
             "currency": "NGN",
-            "orderId": order_id,
+            "orderId": str(order_id),
             "description": "ALATPay Checkout Payment",
             "customer": {
                 "name": customer_name
@@ -50,13 +53,13 @@ class ALATPayService:
                 response.raise_for_status()  # Raise HTTP errors
                 alat_response = response.json()
             except httpx.HTTPStatusError as e:
-                print(f"HTTP error: {e}")
+                logger.error(f"HTTP error: {e.response.text}")
                 if e.response.status_code == 400:
                     # Stop immediately for Bad Request
                     raise BadRequestError("Bad Request to ALATPay API") from e
                 raise  # Re-raise other HTTP errors to retry
             except httpx.RequestError as e:
-                print(f"Request error: {e}")
+                logger.error(f"Request error: {e}")
                 raise  # Re-raise to retry
 
         return {

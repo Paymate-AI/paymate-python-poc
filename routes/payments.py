@@ -41,11 +41,10 @@ async def create_payment(
         )
     except BadRequestError as e:
 
-        print(e)
+        logger.error(f"Bad request: {e}")
         raise HTTPException(status_code=400, detail="Invalid request to generate virtual account")
     except Exception as e:
         logger.error("An unexpected error occurred", exc_info=True)
-        print(f"[ERROR] Connection failed permanently after retries. Root Cause: {e.__cause__}")
         raise HTTPException(status_code=500, detail="Failed to generate virtual account")
 
     return payment
