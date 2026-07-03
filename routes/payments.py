@@ -88,5 +88,12 @@ async def reconcile_payments_task(db: Session):
     while True:
         pending_payments = payment_service.get_pending_payments()
         for payment in pending_payments:
-            await payment_service.verify_and_update_payment(payment.reference)
+            try:
+                await payment_service.verify_and_update_payment(payment.reference)
+            except ValueError as e:
+                logger.error(f"Failed to verify payment: {payment.reference} - {e}")
+                continue
+            except Exception as e:
+                logger.error(f"Failed to verify payment: {payment.reference} - {e}")
+                continue
         await asyncio.sleep(300)  # Check every 5 minutes
