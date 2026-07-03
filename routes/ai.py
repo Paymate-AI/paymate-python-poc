@@ -142,10 +142,15 @@ async def whatsapp_webhook(
         )
     
     # 2. Dynamic Context Pull
-    biz_data = await fetch_business_data_from_backend(business_id)
+    business_service = BusinessService(db)
+    biz_data = business_service.get_business_by_id(business_id)
+    if not biz_data:
+        return schemas.ChatResponse(
+            reply="Sorry, I can't find the business you're talking to. Please try again."
+        )
     
     system_instruction = (
-        f"You are PayMate AI, the store assistant for '{biz_data['name']}'.\n"
+        f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
         f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
         f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
         f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
@@ -273,7 +278,7 @@ async def whatsapp_webhook(
             action_payload = {
                 "type": "COLLECT_PAYMENT",
                 "amount": int(payment.amount),
-                "business_name": biz_data['name'],
+                "business_name": biz_data.name,
                 "payment_reference": payment.reference
             }
             
