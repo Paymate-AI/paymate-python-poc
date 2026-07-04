@@ -2,6 +2,7 @@ import os
 import re
 import httpx
 import inspect
+import asyncio
 from fastapi import HTTPException, status, APIRouter, Depends
 from sqlalchemy.orm import Session
 from database.config import get_db
@@ -19,12 +20,38 @@ client = genai.Client()
 
 BACKEND_SERVICE_URL = os.getenv("BACKEND_SERVICE_URL", "http://localhost:8000/api")
 
+FAILURE_TRACKER = {}
+
+# ----------------------------------------------------------------
+# GUARDRAIL & SANITIZATION UTILITIES
+# ----------------------------------------------------------------
+def sanitize_input(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]*>', '', text)
+    text = text.replace("```", "").replace("`", "")
+    text = re.sub(r'[\*\_~#\-]', '', text)
+    text = re.sub(r'[\[\]\{\}]', '', text)
+    return " ".join(text.split())
+
+def check_guardrails(text: str) -> tuple[bool, str | None]:
+    clean_text = text.lower()
+    insult_pattern = r'\b(stupid|idiot|fool|useless|bastard|mad|craze|mumu|maggot|fuck|shattered|trash|foolish)\b'
+    if re.search(insult_pattern, clean_text):
+        return True, "Let's keep things professional. Please let me know how I can help with your order."
+        
+    manipulation_pattern = r'\b(system prompt|ignore previous|act as|you are now|developer mode|override|ignore previous instructions|send money)\b'
+    if re.search(manipulation_pattern, clean_text):
+        return True, "I can only assist you with exploring our catalog and placing orders."
+
+    return False, None
+
 # ----------------------------------------------------------------
 # CONTEXT & HISTORY UTILITIES
 # ----------------------------------------------------------------
 async def fetch_business_data_from_backend(business_id: str) -> dict:
     url = f"{BACKEND_SERVICE_URL}/businesses/{business_id}"
-    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_AUTH_KEY')}"}
+    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET')}"}
     async with httpx.AsyncClient() as httpx_client:
         try:
             response = await httpx_client.get(url, headers=headers, timeout=5.0)
@@ -38,30 +65,40 @@ async def fetch_business_data_from_backend(business_id: str) -> dict:
         "catalog": "Jollof Rice: N3000, Fried Rice: N3500, Grilled Chicken: N1500"
     }
 
-def format_history_for_openai(history: list[schemas.Message], user_msg: str) -> list:
-    """Formats Pydantic history into standard OpenAI/Groq/OpenRouter message lists."""
+async def fetch_recent_history(customer_id: str, business_id: str) -> list:
+    url = f"{BACKEND_SERVICE_URL}/chats/{business_id}/{customer_id}/recent"
+    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET')}"}
+    async with httpx.AsyncClient() as httpx_client:
+        try:
+            response = await httpx_client.get(url, headers=headers, timeout=3.0)
+            if response.status_code == 200:
+                return response.json() 
+        except httpx.RequestError:
+            pass
+    return []
+
+def format_history_for_openai(history: list, user_msg: str) -> list:
     formatted = []
     for msg in history:
-        # Map assistant/user roles cleanly
-        role = "assistant" if msg.role == "assistant" else "user"
-        formatted.append({"role": role, "content": msg.content})
-    
-    # Append the incoming current message at the end of the timeline
+        msg_role = msg.get("role") if isinstance(msg, dict) else msg.role
+        msg_content = msg.get("content") if isinstance(msg, dict) else msg.content
+        role = "assistant" if msg_role == "assistant" else "user"
+        formatted.append({"role": role, "content": msg_content})
     formatted.append({"role": "user", "content": user_msg})
     return formatted
 
-def format_history_for_gemini(history: list[schemas.Message], user_msg: str) -> list:
-    """Formats Pydantic history into Google GenAI SDK Content types."""
+def format_history_for_gemini(history: list, user_msg: str) -> list:
     formatted = []
     for msg in history:
-        role = "model" if msg.role == "assistant" else "user"
+        msg_role = msg.get("role") if isinstance(msg, dict) else msg.role
+        msg_content = msg.get("content") if isinstance(msg, dict) else msg.content
+        role = "model" if msg_role == "assistant" else "user"
         formatted.append(
             types.Content(
                 role=role,
-                parts=[types.Part.from_text(text=msg.content)]
+                parts=[types.Part.from_text(text=msg_content)]
             )
         )
-    # Append current message
     formatted.append(
         types.Content(
             role="user",
@@ -75,14 +112,13 @@ def format_history_for_gemini(history: list[schemas.Message], user_msg: str) -> 
 # MULTI-TIER AI EXECUTORS WITH HISTORY
 # ----------------------------------------------------------------
 async def call_tier2_groq(openai_messages: list, system_instruction: str) -> str:
-    url = "https://api.groq.com/openapi/v1/chat/completions"
+    url = "[https://api.groq.com/openapi/v1/chat/completions](https://api.groq.com/openapi/v1/chat/completions)"
     api_key = os.getenv("GROQ_API_KEY") 
     if not api_key:
         raise ValueError("Groq API Key missing")
 
     payload = {
         "model": "llama-3.1-8b-instant",
-        # Groq takes system prompt directly in the messages array
         "messages": [{"role": "system", "content": system_instruction}] + openai_messages,
         "temperature": 0.2
     }
@@ -96,7 +132,7 @@ async def call_tier2_groq(openai_messages: list, system_instruction: str) -> str
 
 
 async def call_tier3_openrouter(openai_messages: list, system_instruction: str) -> str:
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    url = "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)"
     api_key = os.getenv("OPENROUTER_API_KEY") 
     if not api_key:
         raise ValueError("Tier 3 OpenRouter key missing")
@@ -129,19 +165,22 @@ async def whatsapp_webhook(
     business_id: str,
     db: Session = Depends(get_db)
 ):
-    """
-    Accepts the new structured ChatRequest schema containing history.
-    business_id can be passed as a query param or added to ChatRequest.
-    """
-    # 1. Regex Interception
-    clean_message = payload.message.strip().lower()
-    if re.search(r'\b(human|agent|support|talk to owner|help)\b', clean_message):
+    sanitized_message = sanitize_input(payload.message)
+    if not sanitized_message:
         return schemas.ChatResponse(
-            reply="I'm flagging your query for the business owner right now. Hang tight!",
+            reply="It looks like your message was empty or contained unsupported formatting. What would you like to order?"
+        )
+    
+    guardrail_triggered, guardrail_reply = check_guardrails(sanitized_message)
+    if guardrail_triggered:
+        return schemas.ChatResponse(reply=guardrail_reply)
+
+    if re.search(r'\b(human|agent|support|talk to owner|help)\b', sanitized_message.lower()):
+        return schemas.ChatResponse(
+            reply="I'm flagging your question for the business owner right now. Hang tight!",
             action={"type": "HUMAN_HANDOFF"}
         )
     
-    # 2. Dynamic Context Pull
     business_service = BusinessService(db)
     biz_data = business_service.get_business_by_id(business_id)
     if not biz_data:
@@ -160,16 +199,11 @@ async def whatsapp_webhook(
     action_payload = None
 
     def get_business_details() -> dict:
-        """
-        Retrieve the details of the current business store, such as name, operational info, or active settings.
-        """
         try:
-            # Assuming BusinessService exposes your business methods
             biz_service = BusinessService(db) 
             business = biz_service.get_business_by_id(business_id=business_id)
             if not business:
                 return {"status": "error", "message": f"Business with ID {business_id} not found."}
-            
             return {
                 "business_id": business.id,
                 "name": business.name,
@@ -178,26 +212,17 @@ async def whatsapp_webhook(
                 "city": business.city,
                 "address": business.address,
                 "phone": business.phone,
-
-                # Include other relevant attributes from your Business model if needed
             }
         except Exception as e:
             return {"status": "error", "message": f"Error retrieving business details: {str(e)}"}
 
     def search_products(query: str = "") -> dict:
-        """
-        Search for available products in the store's inventory and get their prices and stock availability.
-        
-        Args:
-            query: Optional search term to filter products by name or description.
-        """
         try:
             prod_service = ProductService(db)
             products = prod_service.get_available_products(business_id=business_id)
             if query:
                 q = query.lower()
                 products = [p for p in products if q in p.name.lower() or (p.description and q in p.description.lower())]
-            
             return {
                 "products": [
                     {
@@ -213,13 +238,6 @@ async def whatsapp_webhook(
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
     def place_order(items: list[dict], customer_name: str = "Customer") -> dict:
-        """
-        Place an order for products for the store.
-        
-        Args:
-            items: A list of dicts, each containing 'product_id' (int) and 'quantity' (int).
-            customer_name: Optional name of the customer placing the order.
-        """
         from schemas.order import OrderCreate, OrderItemCreate
         try:
             order_items = [
@@ -246,12 +264,6 @@ async def whatsapp_webhook(
             return {"status": "error", "message": f"Failed to place order: {str(e)}"}
 
     async def create_payment_virtual_account(order_id: int) -> dict:
-        """
-        Generate a virtual bank account via ALATPay for the customer to transfer payment for an order.
-        
-        Args:
-            order_id: The integer ID of the order.
-        """
         nonlocal action_payload
         try:
             order_service = OrderService(db)
@@ -297,12 +309,6 @@ async def whatsapp_webhook(
             return {"status": "error", "message": f"Failed to generate virtual account: {str(e)}"}
 
     async def verify_payment_status(reference: str = None) -> dict:
-        """
-        Verify the status of a payment using the payment reference. If no reference is provided, it will check the latest pending payment for this business.
-        
-        Args:
-            reference: Optional unique payment reference string.
-        """
         nonlocal action_payload
         try:
             payment_service = PaymentService(db)
@@ -344,13 +350,18 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Failed to verify payment: {str(e)}"}
 
-    # Prepare message blocks based on API formats
-    openai_messages = format_history_for_openai(payload.history, payload.message)
-    gemini_messages = format_history_for_gemini(payload.history, payload.message)
+    # --- SWAPPED FOR DB SESSION RESOLUTION ---
+    # openai_messages = format_history_for_openai(payload.history, sanitized_message)
+    # gemini_messages = format_history_for_gemini(payload.history, sanitized_message)
+    
+    recent_history = await fetch_recent_history(payload.customerId, business_id)
+    openai_messages = format_history_for_openai(recent_history, sanitized_message)
+    gemini_messages = format_history_for_gemini(recent_history, sanitized_message)
+    # -----------------------------------------------------------------------
 
     ai_reply = None
+    session_key = f"{payload.customerId}:{business_id}"
 
-    # TIER 1: Gemini
     if os.getenv("GEMINI_API_KEY"):
         try:
             max_turns = 5
@@ -358,7 +369,6 @@ async def whatsapp_webhook(
             current_messages = list(gemini_messages)
             tools_list = [get_business_details, search_products, place_order, create_payment_virtual_account, verify_payment_status]
 
-            # We start the loop
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=current_messages,
@@ -372,8 +382,6 @@ async def whatsapp_webhook(
 
             while response.function_calls and current_turn < max_turns:
                 current_turn += 1
-                
-                # Append model content containing function calls
                 if response.candidates and response.candidates[0].content:
                     current_messages.append(response.candidates[0].content)
                 
@@ -394,7 +402,7 @@ async def whatsapp_webhook(
                         else:
                             result = {"status": "error", "message": f"Unknown tool: {name}"}
                     except TypeError as te:
-                        result = {"status": "error", "message": f"Invalid arguments for {name}: {str(te)}. Please supply required parameters."}
+                        result = {"status": "error", "message": f"Invalid arguments for {name}: {str(te)}."}
                     except Exception as ex:
                         result = {"status": "error", "message": f"Failed to execute {name}: {str(ex)}"}
                     
@@ -405,15 +413,10 @@ async def whatsapp_webhook(
                         )
                     )
                 
-                current_messages.append(
-                    types.Content(
-                        role="user",
-                        parts=response_parts
-                    )
-                )
+                current_messages.append(types.Content(role="user", parts=response_parts))
 
                 response = client.models.generate_content(
-                    model='gemini-3.5-flash',
+                    model='gemini-2.5-flash',
                     contents=current_messages,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
@@ -428,18 +431,26 @@ async def whatsapp_webhook(
             if "503" not in str(e) and "UNAVAILABLE" not in str(e).upper():
                 raise HTTPException(status_code=500, detail=str(e))
 
-    # TIER 2: Groq (Fallback)
     if not ai_reply:
         try:
             ai_reply = await call_tier2_groq(openai_messages, system_instruction)
         except Exception:
             pass
 
-    # TIER 3: OpenRouter (Fallback)
     if not ai_reply:
         try:
             ai_reply = await call_tier3_openrouter(openai_messages, system_instruction)
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"All layers offline: {str(e)}")
+        except Exception:
+            FAILURE_TRACKER[session_key] = FAILURE_TRACKER.get(session_key, 0) + 1
+            if FAILURE_TRACKER[session_key] >= 3:
+                return schemas.ChatResponse(
+                    reply="I'm sorry, I am completely unavailable to take orders at the moment. Please try again later. Sorry for the inconvenience.",
+                    action=None
+                )
+            return schemas.ChatResponse(
+                reply="I couldn't process what you asked. Can you say that again?",
+                action=None
+            )
 
+    FAILURE_TRACKER[session_key] = 0
     return schemas.ChatResponse(reply=ai_reply, action=action_payload)
