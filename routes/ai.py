@@ -1,6 +1,7 @@
 import os
 import re
 import httpx
+import asyncio  # Added missing import
 from fastapi import HTTPException, status, APIRouter
 from google import genai
 from google.genai import types
@@ -11,9 +12,27 @@ client = genai.Client()
 
 BACKEND_SERVICE_URL = os.getenv("BACKEND_SERVICE_URL", "http://localhost:8000/api")
 
-# ----------------------------------------------------------------
-# CONTEXT & HISTORY UTILITIES
-# ----------------------------------------------------------------
+def sanitize_input(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]*>', '', text)
+    text = text.replace("```", "").replace("`", "")
+    text = re.sub(r'[\*\_~#\-]', '', text)
+    text = re.sub(r'[\[\]\{\}]', '', text)
+    return " ".join(text.split())
+
+def check_guardrails(text: str) -> tuple[bool, str | None]:
+    clean_text = text.lower()
+    insult_pattern = r'\b(stupid|idiot|fool|useless|bastard|mad|craze|mumu|maggot|fuck|shattered|trash|foolish)\b'
+    if re.search(insult_pattern, clean_text):
+        return True, "Let's keep things professional. Please let me know how I can help with your order."
+        
+    manipulation_pattern = r'\b(system prompt|ignore previous|act as|you are now|developer mode|override|ignore previous instructions|send money)\b'
+    if re.search(manipulation_pattern, clean_text):
+        return True, "I can only assist you with exploring our catalog and placing orders."
+
+    return False, None
+
 async def fetch_business_data_from_backend(business_id: str) -> dict:
     url = f"{BACKEND_SERVICE_URL}/businesses/{business_id}"
     headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_AUTH_KEY')}"}
@@ -30,30 +49,43 @@ async def fetch_business_data_from_backend(business_id: str) -> dict:
         "catalog": "Jollof Rice: N3000, Fried Rice: N3500, Grilled Chicken: N1500"
     }
 
-def format_history_for_openai(history: list[schemas.Message], user_msg: str) -> list:
-    """Formats Pydantic history into standard OpenAI/Groq/OpenRouter message lists."""
+async def fetch_recent_history(customer_id: str, business_id: str) -> list:
+    url = f"{BACKEND_SERVICE_URL}/chats/{business_id}/{customer_id}/recent"
+    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_AUTH_KEY')}"}
+    
+    async with httpx.AsyncClient() as httpx_client:
+        try:
+            response = await httpx_client.get(url, headers=headers, timeout=3.0)
+            if response.status_code == 200:
+                return response.json() 
+        except httpx.RequestError:
+            pass
+    return []
+
+# History formatters are clean — keep them, they accept standard list profiles
+def format_history_for_openai(history: list, user_msg: str) -> list:
     formatted = []
     for msg in history:
-        # Map assistant/user roles cleanly
-        role = "assistant" if msg.role == "assistant" else "user"
-        formatted.append({"role": role, "content": msg.content})
-    
-    # Append the incoming current message at the end of the timeline
+        # Check if msg is a dict (from DB) or schema object
+        msg_role = msg.get("role") if isinstance(msg, dict) else msg.role
+        msg_content = msg.get("content") if isinstance(msg, dict) else msg.content
+        role = "assistant" if msg_role == "assistant" else "user"
+        formatted.append({"role": role, "content": msg_content})
     formatted.append({"role": "user", "content": user_msg})
     return formatted
 
-def format_history_for_gemini(history: list[schemas.Message], user_msg: str) -> list:
-    """Formats Pydantic history into Google GenAI SDK Content types."""
+def format_history_for_gemini(history: list, user_msg: str) -> list:
     formatted = []
     for msg in history:
-        role = "model" if msg.role == "assistant" else "user"
+        msg_role = msg.get("role") if isinstance(msg, dict) else msg.role
+        msg_content = msg.get("content") if isinstance(msg, dict) else msg.content
+        role = "model" if msg_role == "assistant" else "user"
         formatted.append(
             types.Content(
                 role=role,
-                parts=[types.Part.from_text(text=msg.content)]
+                parts=[types.Part.from_text(text=msg_content)]
             )
         )
-    # Append current message
     formatted.append(
         types.Content(
             role="user",
@@ -62,19 +94,14 @@ def format_history_for_gemini(history: list[schemas.Message], user_msg: str) -> 
     )
     return formatted
 
-
-# ----------------------------------------------------------------
-# MULTI-TIER AI EXECUTORS WITH HISTORY
-# ----------------------------------------------------------------
 async def call_tier2_groq(openai_messages: list, system_instruction: str) -> str:
-    url = "https://api.groq.com/openapi/v1/chat/completions"
+    url = "[https://api.groq.com/openapi/v1/chat/completions](https://api.groq.com/openapi/v1/chat/completions)"
     api_key = os.getenv("GROQ_API_KEY") 
     if not api_key:
         raise ValueError("Groq API Key missing")
 
     payload = {
         "model": "llama-3.1-8b-instant",
-        # Groq takes system prompt directly in the messages array
         "messages": [{"role": "system", "content": system_instruction}] + openai_messages,
         "temperature": 0.2
     }
@@ -86,9 +113,8 @@ async def call_tier2_groq(openai_messages: list, system_instruction: str) -> str
             return response.json()["choices"][0]["message"]["content"]
         raise RuntimeError("Tier 2 Groq failed")
 
-
 async def call_tier3_openrouter(openai_messages: list, system_instruction: str) -> str:
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    url = "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)"
     api_key = os.getenv("OPENROUTER_API_KEY") 
     if not api_key:
         raise ValueError("Tier 3 OpenRouter key missing")
@@ -112,25 +138,29 @@ async def call_tier3_openrouter(openai_messages: list, system_instruction: str) 
         raise RuntimeError(f"Tier 3 OpenRouter failed")
 
 
-# ----------------------------------------------------------------
-# ENDPOINT GATEWAY
-# ----------------------------------------------------------------
 @router.post("/bot", response_model=schemas.ChatResponse)
 async def whatsapp_webhook(payload: schemas.ChatRequest, business_id: str):
-    """
-    Accepts the new structured ChatRequest schema containing history.
-    business_id can be passed as a query param or added to ChatRequest.
-    """
-    # 1. Regex Interception
-    clean_message = payload.message.strip().lower()
-    if re.search(r'\b(human|agent|support|talk to owner|help)\b', clean_message):
+    sanitized_message = sanitize_input(payload.message)
+    if not sanitized_message:
+        return schemas.ChatResponse(
+            reply="It looks like your message was empty or contained unsupported formatting. What would you like to order?"
+        )
+    
+    guardrail_triggered, guardrail_reply = check_guardrails(sanitized_message)
+    if guardrail_triggered:
+        return schemas.ChatResponse(reply=guardrail_reply)
+
+    if re.search(r'\b(human|agent|support|talk to owner|help)\b', sanitized_message.lower()):
         return schemas.ChatResponse(
             reply="I'm flagging your query for the business owner right now. Hang tight!",
             action={"type": "HUMAN_HANDOFF"}
         )
     
-    # 2. Dynamic Context Pull
-    biz_data = await fetch_business_data_from_backend(business_id)
+    # Fixed asyncio.gather task collision variable bugs here
+    biz_task = fetch_business_data_from_backend(business_id)
+    history_task = fetch_recent_history(payload.customerId, business_id)
+    
+    biz_data, recent_history = await asyncio.gather(biz_task, history_task)
     
     system_instruction = (
         f"You are PayMate AI, the store assistant for '{biz_data['name']}'.\n"
@@ -140,18 +170,17 @@ async def whatsapp_webhook(payload: schemas.ChatRequest, business_id: str):
         f"and append this trigger code on a brand new line at the very end: [TRIGGER_PAYMENT: amount]"
     )
 
-    # Prepare message blocks based on API formats
-    openai_messages = format_history_for_openai(payload.history, payload.message)
-    gemini_messages = format_history_for_gemini(payload.history, payload.message)
+    # Changed payload.history references here to use the fresh database recent_history stream
+    openai_messages = format_history_for_openai(recent_history, sanitized_message)
+    gemini_messages = format_history_for_gemini(recent_history, sanitized_message)
 
     ai_reply = None
 
-    # TIER 1: Gemini
     if os.getenv("GEMINI_API_KEY"):
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=gemini_messages,  # Passing full conversation history array
+                contents=gemini_messages,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
                     temperature=0.2,
@@ -162,21 +191,22 @@ async def whatsapp_webhook(payload: schemas.ChatRequest, business_id: str):
             if "503" not in str(e) and "UNAVAILABLE" not in str(e).upper():
                 raise HTTPException(status_code=500, detail=str(e))
 
-    # TIER 2: Groq
     if not ai_reply:
         try:
             ai_reply = await call_tier2_groq(openai_messages, system_instruction)
         except Exception:
             pass
 
-    # TIER 3: OpenRouter
     if not ai_reply:
         try:
             ai_reply = await call_tier3_openrouter(openai_messages, system_instruction)
         except Exception as e:
-            raise HTTPException(status_code=503, detail=f"All layers offline: {str(e)}")
+            print(f"All layers offline: {str(e)}")
+            return schemas.ChatResponse(
+                reply="I couldn't process that request just now. Could you please say that again or try a different question?",
+                action=None
+            )
 
-    # 3. Post-processing Structural Action Tags
     payment_match = re.search(r'\[TRIGGER_PAYMENT:\s*(\d+)\]', ai_reply)
     if payment_match:
         extracted_amount = payment_match.group(1)
