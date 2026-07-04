@@ -1,7 +1,7 @@
 import os
 import re
 import httpx
-import asyncio  # Added missing import
+import asyncio
 from fastapi import HTTPException, status, APIRouter
 from google import genai
 from google.genai import types
@@ -11,6 +11,8 @@ router = APIRouter()
 client = genai.Client()
 
 BACKEND_SERVICE_URL = os.getenv("BACKEND_SERVICE_URL", "http://localhost:8000/api")
+
+FAILURE_TRACKER = {}
 
 def sanitize_input(text: str) -> str:
     if not text:
@@ -52,7 +54,6 @@ async def fetch_business_data_from_backend(business_id: str) -> dict:
 async def fetch_recent_history(customer_id: str, business_id: str) -> list:
     url = f"{BACKEND_SERVICE_URL}/chats/{business_id}/{customer_id}/recent"
     headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_AUTH_KEY')}"}
-    
     async with httpx.AsyncClient() as httpx_client:
         try:
             response = await httpx_client.get(url, headers=headers, timeout=3.0)
@@ -62,11 +63,9 @@ async def fetch_recent_history(customer_id: str, business_id: str) -> list:
             pass
     return []
 
-# History formatters are clean — keep them, they accept standard list profiles
 def format_history_for_openai(history: list, user_msg: str) -> list:
     formatted = []
     for msg in history:
-        # Check if msg is a dict (from DB) or schema object
         msg_role = msg.get("role") if isinstance(msg, dict) else msg.role
         msg_content = msg.get("content") if isinstance(msg, dict) else msg.content
         role = "assistant" if msg_role == "assistant" else "user"
@@ -152,11 +151,10 @@ async def whatsapp_webhook(payload: schemas.ChatRequest, business_id: str):
 
     if re.search(r'\b(human|agent|support|talk to owner|help)\b', sanitized_message.lower()):
         return schemas.ChatResponse(
-            reply="I'm flagging your query for the business owner right now. Hang tight!",
+            reply="I'm flagging your question for the business owner right now. Hang tight!",
             action={"type": "HUMAN_HANDOFF"}
         )
     
-    # Fixed asyncio.gather task collision variable bugs here
     biz_task = fetch_business_data_from_backend(business_id)
     history_task = fetch_recent_history(payload.customerId, business_id)
     
@@ -170,11 +168,11 @@ async def whatsapp_webhook(payload: schemas.ChatRequest, business_id: str):
         f"and append this trigger code on a brand new line at the very end: [TRIGGER_PAYMENT: amount]"
     )
 
-    # Changed payload.history references here to use the fresh database recent_history stream
     openai_messages = format_history_for_openai(recent_history, sanitized_message)
     gemini_messages = format_history_for_gemini(recent_history, sanitized_message)
 
     ai_reply = None
+    session_key = f"{payload.customerId}:{business_id}"
 
     if os.getenv("GEMINI_API_KEY"):
         try:
@@ -200,12 +198,23 @@ async def whatsapp_webhook(payload: schemas.ChatRequest, business_id: str):
     if not ai_reply:
         try:
             ai_reply = await call_tier3_openrouter(openai_messages, system_instruction)
-        except Exception as e:
-            print(f"All layers offline: {str(e)}")
+        except Exception:
+            # Increment failure counter in memory mapping
+            FAILURE_TRACKER[session_key] = FAILURE_TRACKER.get(session_key, 0) + 1
+            
+            if FAILURE_TRACKER[session_key] >= 3:
+                return schemas.ChatResponse(
+                    reply="I'm sorry, I am completely unavailable to take orders at the moment. Please try again later. Sorry for the inconvenience.",
+                    action=None
+                )
+            
             return schemas.ChatResponse(
-                reply="I couldn't process that request just now. Could you please say that again or try a different question?",
+                reply="I couldn't process what you asked. Can you say that again?",
                 action=None
             )
+
+    # Reset failure counter on a successful AI generation response run
+    FAILURE_TRACKER[session_key] = 0
 
     payment_match = re.search(r'\[TRIGGER_PAYMENT:\s*(\d+)\]', ai_reply)
     if payment_match:
