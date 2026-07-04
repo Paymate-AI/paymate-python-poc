@@ -37,7 +37,7 @@ def check_guardrails(text: str) -> tuple[bool, str | None]:
 
 async def fetch_business_data_from_backend(business_id: str) -> dict:
     url = f"{BACKEND_SERVICE_URL}/businesses/{business_id}"
-    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_AUTH_KEY')}"}
+    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET')}"}
     async with httpx.AsyncClient() as httpx_client:
         try:
             response = await httpx_client.get(url, headers=headers, timeout=5.0)
@@ -53,7 +53,7 @@ async def fetch_business_data_from_backend(business_id: str) -> dict:
 
 async def fetch_recent_history(customer_id: str, business_id: str) -> list:
     url = f"{BACKEND_SERVICE_URL}/chats/{business_id}/{customer_id}/recent"
-    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_AUTH_KEY')}"}
+    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET')}"}
     async with httpx.AsyncClient() as httpx_client:
         try:
             response = await httpx_client.get(url, headers=headers, timeout=3.0)
