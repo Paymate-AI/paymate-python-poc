@@ -3,6 +3,7 @@ import re
 import httpx
 import inspect
 import asyncio
+import uuid
 from fastapi import HTTPException, status, APIRouter, Depends
 from sqlalchemy.orm import Session
 from database.config import get_db
@@ -14,28 +15,43 @@ from services.order_service import OrderService
 from services.payment_service import PaymentService
 from services.alatpay_service import BadRequestError
 from services.business_service import BusinessService
+from sqlalchemy import text
 
 router = APIRouter()
-client = genai.Client()
+
+# --- DYNAMIC CLIENT INITIALIZATION FOR BOTH OF YOU ---
+GCP_PROJECT = os.getenv("GCP_PROJECT_ID")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+
+if GCP_PROJECT:
+    client = genai.Client(
+        vertexai=True,
+        project=GCP_PROJECT,
+        location=os.getenv("GCP_REGION", "us-central1")
+    )
+elif GEMINI_KEY:
+    client = genai.Client(api_key=GEMINI_KEY)
+else:
+    client = None
+# -----------------------------------------------------
 
 BACKEND_SERVICE_URL = os.getenv("BACKEND_SERVICE_URL", "http://localhost:8000/api")
-
 FAILURE_TRACKER = {}
 
 # ----------------------------------------------------------------
 # GUARDRAIL & SANITIZATION UTILITIES
 # ----------------------------------------------------------------
-def sanitize_input(text: str) -> str:
-    if not text:
+def sanitize_input(text_str: str) -> str:
+    if not text_str:
         return ""
-    text = re.sub(r'<[^>]*>', '', text)
-    text = text.replace("```", "").replace("`", "")
-    text = re.sub(r'[\*\_~#\-]', '', text)
-    text = re.sub(r'[\[\]\{\}]', '', text)
-    return " ".join(text.split())
+    text_str = re.sub(r'<[^>]*>', '', text_str)
+    text_str = text_str.replace("```", "").replace("`", "")
+    text_str = re.sub(r'[\*\_~#\-]', '', text_str)
+    text_str = re.sub(r'[\[\]\{\}]', '', text_str)
+    return " ".join(text_str.split())
 
-def check_guardrails(text: str) -> tuple[bool, str | None]:
-    clean_text = text.lower()
+def check_guardrails(text_str: str) -> tuple[bool, str | None]:
+    clean_text = text_str.lower()
     insult_pattern = r'\b(stupid|idiot|fool|useless|bastard|mad|craze|mumu|maggot|fuck|shattered|trash|foolish)\b'
     if re.search(insult_pattern, clean_text):
         return True, "Let's keep things professional. Please let me know how I can help with your order."
@@ -51,7 +67,7 @@ def check_guardrails(text: str) -> tuple[bool, str | None]:
 # ----------------------------------------------------------------
 async def fetch_business_data_from_backend(business_id: str) -> dict:
     url = f"{BACKEND_SERVICE_URL}/businesses/{business_id}"
-    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET')}"}
+    headers = {"X-Internal-Secret": os.getenv("INTERNAL_SECRET")}
     async with httpx.AsyncClient() as httpx_client:
         try:
             response = await httpx_client.get(url, headers=headers, timeout=5.0)
@@ -65,17 +81,24 @@ async def fetch_business_data_from_backend(business_id: str) -> dict:
         "catalog": "Jollof Rice: N3000, Fried Rice: N3500, Grilled Chicken: N1500"
     }
 
-async def fetch_recent_history(customer_id: str, business_id: str) -> list:
-    url = f"{BACKEND_SERVICE_URL}/chats/{business_id}/{customer_id}/recent"
-    headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET')}"}
-    async with httpx.AsyncClient() as httpx_client:
-        try:
-            response = await httpx_client.get(url, headers=headers, timeout=3.0)
-            if response.status_code == 200:
-                return response.json() 
-        except httpx.RequestError:
-            pass
-    return []
+def fetch_recent_history(db: Session, customer_id: str, limit: int = 6) -> list:
+    try:
+        # Match fields: id, customerWhatsappId, role, content, createdAt
+        query = text("""
+            SELECT role::text, content 
+            FROM "ConversationMessage" 
+            WHERE "customerWhatsappId" = :customer_id 
+            ORDER BY "createdAt" DESC 
+            LIMIT :limit
+        """)
+        result = db.execute(query, {"customer_id": customer_id, "limit": limit}).fetchall()
+        formatted_messages = [{"role": row[0].lower(), "content": row[1]} for row in result]
+        formatted_messages.reverse()
+        return formatted_messages
+    except Exception as e:
+        db.rollback()
+        print(f"Neon Raw SQL Error: {str(e)}")
+        return []
 
 def format_history_for_openai(history: list, user_msg: str) -> list:
     formatted = []
@@ -190,6 +213,7 @@ async def whatsapp_webhook(
     
     system_instruction = (
         f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
+        f"Attempt to not deviate too much from primary assignment which is to be an assistant.\n"
         f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
         f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
         f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
@@ -350,19 +374,14 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Failed to verify payment: {str(e)}"}
 
-    # --- SWAPPED FOR DB SESSION RESOLUTION ---
-    # openai_messages = format_history_for_openai(payload.history, sanitized_message)
-    # gemini_messages = format_history_for_gemini(payload.history, sanitized_message)
-    
-    recent_history = await fetch_recent_history(payload.customerId, business_id)
+    recent_history = fetch_recent_history(db, payload.customerId, limit=6)
     openai_messages = format_history_for_openai(recent_history, sanitized_message)
     gemini_messages = format_history_for_gemini(recent_history, sanitized_message)
-    # -----------------------------------------------------------------------
 
     ai_reply = None
     session_key = f"{payload.customerId}:{business_id}"
 
-    if os.getenv("GEMINI_API_KEY"):
+    if client:
         try:
             max_turns = 5
             current_turn = 0
@@ -453,4 +472,36 @@ async def whatsapp_webhook(
             )
 
     FAILURE_TRACKER[session_key] = 0
+
+    # INSERT QUESTION & ANSWER TO CONVERSATION HISTORY
+    try:
+        session_check = text("""
+            SELECT 1 FROM "CustomerSession" WHERE "customerWhatsappId" = :customer_id LIMIT 1
+        """)
+        has_session = db.execute(session_check, {"customer_id": payload.customerId}).fetchone()
+        
+        if not has_session:
+            create_session = text("""
+                INSERT INTO "CustomerSession" ("customerWhatsappId", "activeBusinessId", state, data, "updatedAt")
+                VALUES (:customer_id, :business_id, 'IDLE'::"SessionState", '{}'::jsonb, NOW())
+            """)
+            db.execute(create_session, {"customer_id": payload.customerId, "business_id": business_id})
+            db.commit()
+            
+        insert_msg = text("""
+            INSERT INTO "ConversationMessage" (id, "customerWhatsappId", role, content) 
+            VALUES (:id, :customer_id, :role, :content)
+        """)
+        
+        user_msg_id = str(uuid.uuid4())
+        ai_msg_id = str(uuid.uuid4())
+        
+        db.execute(insert_msg, {"id": user_msg_id, "customer_id": payload.customerId, "role": "user", "content": sanitized_message})
+        db.execute(insert_msg, {"id": ai_msg_id, "customer_id": payload.customerId, "role": "assistant", "content": ai_reply})
+        db.commit()
+        
+    except Exception as db_err:
+        db.rollback()
+        print(f"Failed to resolve schema context or save turns to Neon: {db_err}")
+        
     return schemas.ChatResponse(reply=ai_reply, action=action_payload)
