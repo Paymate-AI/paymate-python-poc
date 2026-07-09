@@ -27,9 +27,10 @@ class ALATPayService:
             retry_if_exception_type(httpx.RequestError) |
             retry_if_exception_type(httpx.HTTPStatusError) &
             retry_if_not_exception_type(BadRequestError)
-        )
+        ),
+        reraise=True
     )
-    async def generate_virtual_account(order_id: int, amount: float, reference: str, customer_name: str, ) -> dict:
+    async def generate_virtual_account(order_id: int, amount: float, reference: str, customer_whatsapp_id: str, ) -> dict:
         """Generate virtual account number via ALATPay API with retries"""
         url = f"{ALATPayService.BASE_URL}/bank-transfer/api/v1/bankTransfer/virtualAccount"
         headers = {
@@ -43,7 +44,7 @@ class ALATPayService:
             "orderId": str(order_id),
             "description": "ALATPay Checkout Payment",
             "customer": {
-                "name": customer_name
+                "whatsapp_id": customer_whatsapp_id
             }
         }
 
@@ -54,9 +55,9 @@ class ALATPayService:
                 alat_response = response.json()["data"]
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error: {e.response.text}")
-                if e.response.status_code == 400:
+                if e.response.status_code == 400 or e.response.status_code == 422:
                     # Stop immediately for Bad Request
-                    raise BadRequestError("Bad Request to ALATPay API") from e
+                    raise BadRequestError(e.response.json()["message"]) from e
                 raise  # Re-raise other HTTP errors to retry
             except httpx.RequestError as e:
                 logger.error(f"Request error: {e}")
@@ -64,7 +65,7 @@ class ALATPayService:
 
         return {
             "account_number": alat_response.get("virtualBankAccountNumber", ""),
-            "customer_name": customer_name,
+            "customer_whatsapp_id": customer_whatsapp_id,
             "bank_name": "Wema Bank",
             "reference": reference,
             "transaction_id": alat_response.get("transactionId", ""),
@@ -78,8 +79,10 @@ class ALATPayService:
             retry_if_exception_type(httpx.RequestError) |
             retry_if_exception_type(httpx.HTTPStatusError) &
             retry_if_not_exception_type(BadRequestError)
-        )
+        ),
+        reraise=True
     )
+
     async def verify_payment(transaction_id: str) -> dict:
         """Verify payment status via ALATPay API using the transaction ID"""
         if not transaction_id:
@@ -106,7 +109,7 @@ class ALATPayService:
                     raise HTTPException(status_code=status.HTTP_202_ACCEPTED, detail=error)
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error: {e.response.text}")
-                if e.response.status_code == 400:
+                if e.response.status_code == 400 or e.response.status_code == 422:
                     raise BadRequestError("Bad Request to ALATPay API") from e
                 raise
             except httpx.RequestError as e:

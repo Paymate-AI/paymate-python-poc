@@ -32,7 +32,7 @@ class PaymentService:
             return self.db.query(Payment).filter(Payment.order_id == order_id).first()
             
 
-    async def generate_payment_virtual_account(self, payment_id: int, customer_name: str):
+    async def generate_payment_virtual_account(self, payment_id: int, customer_whatsapp_id: str):
         db_payment = self.db.query(Payment).filter(Payment.id == payment_id).first()
         if not db_payment:
             raise ValueError("Payment not found")
@@ -42,7 +42,7 @@ class PaymentService:
             order_id=db_payment.order_id,
             amount=db_payment.amount,
             reference=db_payment.reference,
-            customer_name=customer_name
+            customer_whatsapp_id=customer_whatsapp_id
         )
         db_payment.transaction_id = alatpay_response.pop("transaction_id")
         # Create virtual account record
@@ -51,7 +51,7 @@ class PaymentService:
             db_virtual_account = VirtualAccount(
                 payment_id=payment_id,
                 account_number=alatpay_response["account_number"],
-                account_name=alatpay_response["customer_name"],
+                account_name="Paymate Ai",
                 bank_name=alatpay_response["bank_name"],
                 expiry_date=expiry_date
             )
@@ -80,7 +80,8 @@ class PaymentService:
             self.order_service.update_order_status(db_payment.order_id, "paid")
 
             # Update inventory
-            self.order_service.update_inventory_on_payment(db_payment.order_id)
+            # TODO: call the ts service to update catalog stock
+            # self.order_service.update_inventory_on_payment(db_payment.order_id)
 
         elif verification["status"] == "failed":
             db_payment.status = "failed"
