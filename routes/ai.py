@@ -129,34 +129,36 @@ async def whatsapp_webhook(
     business_id: str,
     db: Session = Depends(get_db)
 ):
-    """
-    Accepts the new structured ChatRequest schema containing history.
-    business_id can be passed as a query param or added to ChatRequest.
-    """
-    # 1. Regex Interception
-    clean_message = payload.message.strip().lower()
-    if re.search(r'\b(human|agent|support|talk to owner|help)\b', clean_message):
+    # TODO : Check if the headers contains the valid secret key 
+    sanitized_message = sanitize_input(payload.message)
+    if not sanitized_message:
         return schemas.ChatResponse(
             reply="I'm flagging your query for the business owner right now. Hang tight!",
             action={"type": "HUMAN_HANDOFF"}
         )
-    
-    # 2. Dynamic Context Pull
-    business_service = BusinessService(db)
-    biz_data = business_service.get_business_by_id(business_id)
-    if not biz_data:
-        return schemas.ChatResponse(
-            reply="Sorry, I can't find the business you're talking to. Please try again."
+    system_instruction = ""
+
+    if business_id:
+        business_service = BusinessService(db)
+        biz_data = business_service.get_business_by_id(business_id)
+
+        if not biz_data:
+            return schemas.ChatResponse(
+                reply="Sorry, I can't find the business you're talking to. Please try again."
+            )
+        
+        system_instruction += (
+            f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
         )
     
-    system_instruction = (
-        f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
+    system_instruction += (
+        f"Attempt to not deviate too much from primary assignment which is to be an assistant.\n"
         f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
         f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
         f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
         f"When a payment virtual account is created, present the bank name, account number, account name, amount, and the payment_reference clearly to the customer."
-    )
-
+    ) 
+    
     action_payload = None
 
     def get_business_details() -> dict:
