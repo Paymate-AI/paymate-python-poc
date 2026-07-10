@@ -9,6 +9,8 @@ class ChatRequest(BaseModel):
     customerId: str
     message: str
     history: List[Message] = Field(default_factory=list)
+    state: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
 
 class ChatResponse(BaseModel):
     reply: str
