@@ -1,5 +1,6 @@
 import logging
 import uuid
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from models.payment import Payment, VirtualAccount
@@ -92,15 +93,11 @@ class PaymentService:
             elif verification["status"] == "failed":
                 db_payment.status = "failed"
                 db_payment.gateway_response = str(verification)
-        except ValueError as e:
-            if created_at < cutoff_time:
+        except HTTPException as e:
+            if e.detail.get("status") is False and created_at < cutoff_time:
                 db_payment.status = "Failed"
         except Exception as e:
-            logger.error(f"Failed to verify payment: {db_payment.reference} - {e}")
-            if e.detail.get("status") == False:
-                if created_at < cutoff_time:
-                    db_payment.status = "Failed"
-                
+            logger.error(f"Unexpected error verifying {reference}: {e}")
 
         self.db.commit()
         self.db.refresh(db_payment)

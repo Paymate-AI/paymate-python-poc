@@ -22,9 +22,9 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
 
     # Start payment reconciliation background task
-    db_gen = get_db()
-    db = next(db_gen)
-    reconciliation_task = asyncio.create_task(reconcile_payments_task(db))
+    # db_gen = get_db()
+    # db = next(db_gen)
+    reconciliation_task = asyncio.create_task(reconcile_payments_task())
 
     yield
 
@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
         await reconciliation_task
     except asyncio.CancelledError:
         pass
-    db_gen.close()
+    # db_gen.close()
 
 
 app = FastAPI(

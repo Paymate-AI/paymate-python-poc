@@ -1,9 +1,9 @@
 import asyncio
 import logging
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Annotated
+from typing import Annotated, List
 from sqlalchemy.orm import Session
-from database.config import get_db
+from database.config import SessionLocal, get_db
 from schemas.payment import PaymentResponse
 from services.payment_service import PaymentService
 from services.order_service import OrderService
@@ -82,18 +82,31 @@ async def get_payment(
     return payment
 
 
-async def reconcile_payments_task(db: Session):
+@router.get(
+    "/pending",
+    response_model=List[PaymentResponse],
+    summary="Get all pending payments",
+    description="Return a list of all payments with pending status"
+)
+async def get_pending_payments(
+    payment_service: Annotated[PaymentService, Depends(get_payment_service)]
+):
+    payments = payment_service.get_pending_payments()
+    return payments
+
+
+async def reconcile_payments_task():
     """Background task to periodically reconcile pending payments"""
+    db = SessionLocal()
     payment_service = PaymentService(db)
     while True:
-        pending_payments = payment_service.get_pending_payments()
-        for payment in pending_payments:
-            try:
-                await payment_service.verify_and_update_payment(payment.reference)
-            except ValueError as e:
-                logger.error(f"Failed to verify payment: {payment.reference} - {e}")
-                continue
-            except Exception as e:
-                logger.error(f"Failed to verify payment: {payment.reference} - {e}")
-                continue
-        await asyncio.sleep(100)  # Check every 5 minutes
+        await asyncio.to_thread(_reconcile_once, payment_service)
+        await asyncio.sleep(300)  # Check every 5 minutes
+
+def _reconcile_once(payment_service):
+    pending_payments = payment_service.get_pending_payments()
+    for payment in pending_payments:
+        try:
+            asyncio.run(payment_service.verify_and_update_payment(payment.reference))
+        except Exception as e:
+            logger.error(f"Failed to verify payment: {payment.reference} - {e}")
