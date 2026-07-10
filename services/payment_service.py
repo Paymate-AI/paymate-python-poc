@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from models.payment import Payment, VirtualAccount
 from services.alatpay_service import ALATPayService
 from services.order_service import OrderService
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 logger = logging.getLogger(__name__)
@@ -69,23 +69,38 @@ class PaymentService:
             return None
 
         # Verify with ALATPay
-        verification = await ALATPayService.verify_payment(db_payment.transaction_id)
+        try :
+            now = datetime.now(timezone.utc)
+            # 2. Establish the cutoff threshold (24 hours ago)
+            cutoff_time = now - timedelta(days=1)
+            created_at = db_payment.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            verification = await ALATPayService.verify_payment(db_payment.transaction_id)
+            if verification["status"] == "successful":
+                logger.info(f"Payment verification called for reference: {reference}")
+                db_payment.status = "successful"
+                db_payment.gateway_response = str(verification)
 
-        if verification["status"] == "successful":
-            logger.info(f"Payment verification called for reference: {reference}")
-            db_payment.status = "successful"
-            db_payment.gateway_response = str(verification)
+                # Update order status
+                self.order_service.update_order_status(db_payment.order_id, "paid")
 
-            # Update order status
-            self.order_service.update_order_status(db_payment.order_id, "paid")
+                # Update inventory
+                # TODO: call the ts service to update catalog stock
+                # self.order_service.update_inventory_on_payment(db_payment.order_id)
 
-            # Update inventory
-            # TODO: call the ts service to update catalog stock
-            # self.order_service.update_inventory_on_payment(db_payment.order_id)
-
-        elif verification["status"] == "failed":
-            db_payment.status = "failed"
-            db_payment.gateway_response = str(verification)
+            elif verification["status"] == "failed":
+                db_payment.status = "failed"
+                db_payment.gateway_response = str(verification)
+        except ValueError as e:
+            if created_at < cutoff_time:
+                db_payment.status = "Failed"
+        except Exception as e:
+            logger.error(f"Failed to verify payment: {db_payment.reference} - {e}")
+            if e.detail.get("status") == False:
+                if created_at < cutoff_time:
+                    db_payment.status = "Failed"
+                
 
         self.db.commit()
         self.db.refresh(db_payment)

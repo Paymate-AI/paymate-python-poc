@@ -393,7 +393,7 @@ async def whatsapp_webhook(
             max_turns = 5
             current_turn = 0
             current_messages = list(gemini_messages)
-            tools_list = [get_business_details, search_products, place_order, create_payment_virtual_account, verify_payment_status]
+            tools_list = []
 
             response = client.models.generate_content(
                 model='gemini-2.5-flash',

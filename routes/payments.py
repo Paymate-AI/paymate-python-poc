@@ -96,4 +96,4 @@ async def reconcile_payments_task(db: Session):
             except Exception as e:
                 logger.error(f"Failed to verify payment: {payment.reference} - {e}")
                 continue
-        await asyncio.sleep(300)  # Check every 5 minutes
+        await asyncio.sleep(100)  # Check every 5 minutes
