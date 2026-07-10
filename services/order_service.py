@@ -13,24 +13,24 @@ class OrderService:
         order_items = []
 
         for item in order_data.items:
-            product = self.db.query(Product).filter(Product.id == item.product_id).first()
-            if not product:
-                raise ValueError(f"Product with id {item.product_id} not found")
-            if product.stock_quantity < item.quantity:
-                raise ValueError(f"Insufficient stock for product {product.name}")
+            # product = self.db.query(Product).filter(Product.id == item.product_id).first()
+            # if not product:
+            #     raise ValueError(f"Product with id {item.product_id} not found")
+            # if product.stock_quantity < item.quantity:
+            #     raise ValueError(f"Insufficient stock for product {product.name}")
 
-            item_total = product.price * item.quantity
+            item_total = item.price * item.quantity
             total_amount += item_total
 
             order_items.append(OrderItem(
                 product_id=item.product_id,
                 quantity=item.quantity,
-                price=product.price
+                price=item.price
             ))
 
         db_order = Order(
             business_id=order_data.business_id,
-            customer_name=order_data.customer_name,
+            customer_whatsapp_id=order_data.customer_whatsapp_id,
             total_amount=total_amount,
             items=order_items
         )
@@ -57,6 +57,7 @@ class OrderService:
         return db_order
 
     def update_inventory_on_payment(self, order_id: int):
+        # TODO: Make a request to the ts service to update the product inventory
         db_order = self.get_order(order_id)
         if not db_order:
             return

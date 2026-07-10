@@ -37,15 +37,15 @@ async def create_payment(
     
         payment = await payment_service.generate_payment_virtual_account(
             payment.id,
-            order.customer_name or "Customer"
+            order.customer_whatsapp_id
         )
     except BadRequestError as e:
 
         logger.error(f"Bad request: {e}")
-        raise HTTPException(status_code=400, detail="Invalid request to generate virtual account")
+        raise HTTPException(status_code=400, detail=f"Invalid request to generate virtual account: {e}")
     except Exception as e:
         logger.error("An unexpected error occurred", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to generate virtual account")
+        raise HTTPException(status_code=500, detail="An Unexpected error occured")
 
     return payment
 
@@ -96,4 +96,4 @@ async def reconcile_payments_task(db: Session):
             except Exception as e:
                 logger.error(f"Failed to verify payment: {payment.reference} - {e}")
                 continue
-        await asyncio.sleep(300)  # Check every 5 minutes
+        await asyncio.sleep(100)  # Check every 5 minutes

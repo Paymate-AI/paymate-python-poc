@@ -29,5 +29,3 @@ class Business(Base):
     # Relationships
     user = relationship("User", back_populates="business")
     products = relationship("Product", back_populates="business")
-
-    orders = relationship("Order", back_populates="business")

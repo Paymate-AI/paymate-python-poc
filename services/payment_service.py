@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from models.payment import Payment, VirtualAccount
 from services.alatpay_service import ALATPayService
 from services.order_service import OrderService
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class PaymentService:
             return self.db.query(Payment).filter(Payment.order_id == order_id).first()
             
 
-    async def generate_payment_virtual_account(self, payment_id: int, customer_name: str):
+    async def generate_payment_virtual_account(self, payment_id: int, customer_whatsapp_id: str):
         db_payment = self.db.query(Payment).filter(Payment.id == payment_id).first()
         if not db_payment:
             raise ValueError("Payment not found")
@@ -42,7 +42,7 @@ class PaymentService:
             order_id=db_payment.order_id,
             amount=db_payment.amount,
             reference=db_payment.reference,
-            customer_name=customer_name
+            customer_whatsapp_id=customer_whatsapp_id
         )
         db_payment.transaction_id = alatpay_response.pop("transaction_id")
         # Create virtual account record
@@ -51,7 +51,7 @@ class PaymentService:
             db_virtual_account = VirtualAccount(
                 payment_id=payment_id,
                 account_number=alatpay_response["account_number"],
-                account_name=alatpay_response["customer_name"],
+                account_name="Paymate Ai",
                 bank_name=alatpay_response["bank_name"],
                 expiry_date=expiry_date
             )
@@ -69,22 +69,38 @@ class PaymentService:
             return None
 
         # Verify with ALATPay
-        verification = await ALATPayService.verify_payment(db_payment.transaction_id)
+        try :
+            now = datetime.now(timezone.utc)
+            # 2. Establish the cutoff threshold (24 hours ago)
+            cutoff_time = now - timedelta(days=1)
+            created_at = db_payment.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            verification = await ALATPayService.verify_payment(db_payment.transaction_id)
+            if verification["status"] == "successful":
+                logger.info(f"Payment verification called for reference: {reference}")
+                db_payment.status = "successful"
+                db_payment.gateway_response = str(verification)
 
-        if verification["status"] == "successful":
-            logger.info(f"Payment verification called for reference: {reference}")
-            db_payment.status = "successful"
-            db_payment.gateway_response = str(verification)
+                # Update order status
+                self.order_service.update_order_status(db_payment.order_id, "paid")
 
-            # Update order status
-            self.order_service.update_order_status(db_payment.order_id, "paid")
+                # Update inventory
+                # TODO: call the ts service to update catalog stock
+                # self.order_service.update_inventory_on_payment(db_payment.order_id)
 
-            # Update inventory
-            self.order_service.update_inventory_on_payment(db_payment.order_id)
-
-        elif verification["status"] == "failed":
-            db_payment.status = "failed"
-            db_payment.gateway_response = str(verification)
+            elif verification["status"] == "failed":
+                db_payment.status = "failed"
+                db_payment.gateway_response = str(verification)
+        except ValueError as e:
+            if created_at < cutoff_time:
+                db_payment.status = "Failed"
+        except Exception as e:
+            logger.error(f"Failed to verify payment: {db_payment.reference} - {e}")
+            if e.detail.get("status") == False:
+                if created_at < cutoff_time:
+                    db_payment.status = "Failed"
+                
 
         self.db.commit()
         self.db.refresh(db_payment)
