@@ -32,7 +32,7 @@ else:
     client = None
 # -----------------------------------------------------
 
-BACKEND_SERVICE_URL = os.getenv("BACKEND_SERVICE_URL", "http://localhost:8000/api")
+TS_SERVICE_URL = os.getenv("TS_SERVICE_URL", "http://localhost:8000/api")
 FAILURE_TRACKER = {}
 
 # ----------------------------------------------------------------
@@ -63,7 +63,7 @@ def check_guardrails(text_str: str) -> tuple[bool, str | None]:
 # CONTEXT & HISTORY UTILITIES
 # ----------------------------------------------------------------
 async def fetch_business_data_from_backend(business_id: str) -> dict:
-    url = f"{BACKEND_SERVICE_URL}/businesses/{business_id}"
+    url = f"{TS_SERVICE_URL}/businesses/{business_id}"
     headers = {"X-Internal-Secret": os.getenv("INTERNAL_SECRET")}
     async with httpx.AsyncClient() as httpx_client:
         try:
@@ -230,7 +230,7 @@ async def whatsapp_webhook(
     biz_data = None
     if business_id and business_id != "None":
         try:
-            ts_base_url = BACKEND_SERVICE_URL.replace("/api", "")
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
             with httpx.Client() as client_http:
                 resp = client_http.get(f"{ts_base_url}/internal/business/{business_id}", headers=headers, timeout=10.0)
@@ -323,7 +323,7 @@ async def whatsapp_webhook(
 
     def get_business_details() -> dict:
         try:
-            ts_base_url = BACKEND_SERVICE_URL.replace("/api", "")
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
             with httpx.Client() as client_http:
                 resp = client_http.get(f"{ts_base_url}/internal/business/{business_id}", headers=headers, timeout=10.0)
@@ -335,7 +335,7 @@ async def whatsapp_webhook(
 
     def search_products(query: str = "") -> dict:
         try:
-            ts_base_url = BACKEND_SERVICE_URL.replace("/api", "")
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
             with httpx.Client() as client_http:
                 resp = client_http.get(
@@ -352,7 +352,7 @@ async def whatsapp_webhook(
 
     def place_order(items: list[dict], customer_name: str = "Customer") -> dict:
         try:
-            ts_base_url = BACKEND_SERVICE_URL.replace("/api", "")
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
             payload_data = {
                 "business_id": business_id,
