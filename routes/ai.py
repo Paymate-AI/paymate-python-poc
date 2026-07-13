@@ -3,19 +3,16 @@ import re
 import httpx
 import inspect
 import asyncio
-import uuid
+from typing import Optional
 from fastapi import HTTPException, status, APIRouter, Depends
 from sqlalchemy.orm import Session
 from database.config import get_db
 from google import genai
 from google.genai import types
 import schemas
-from services.product_service import ProductService
 from services.order_service import OrderService
 from services.payment_service import PaymentService
 from services.alatpay_service import BadRequestError
-from services.business_service import BusinessService
-from sqlalchemy import text
 
 router = APIRouter()
 
@@ -35,7 +32,7 @@ else:
     client = None
 # -----------------------------------------------------
 
-BACKEND_SERVICE_URL = os.getenv("BACKEND_SERVICE_URL", "http://localhost:8000/api")
+TS_SERVICE_URL = os.getenv("TS_SERVICE_URL", "http://localhost:8000/api")
 FAILURE_TRACKER = {}
 
 # ----------------------------------------------------------------
@@ -66,7 +63,7 @@ def check_guardrails(text_str: str) -> tuple[bool, str | None]:
 # CONTEXT & HISTORY UTILITIES
 # ----------------------------------------------------------------
 async def fetch_business_data_from_backend(business_id: str) -> dict:
-    url = f"{BACKEND_SERVICE_URL}/businesses/{business_id}"
+    url = f"{TS_SERVICE_URL}/businesses/{business_id}"
     headers = {"X-Internal-Secret": os.getenv("INTERNAL_SECRET")}
     async with httpx.AsyncClient() as httpx_client:
         try:
@@ -81,38 +78,37 @@ async def fetch_business_data_from_backend(business_id: str) -> dict:
         "catalog": "Jollof Rice: N3000, Fried Rice: N3500, Grilled Chicken: N1500"
     }
 
-def fetch_recent_history(db: Session, customer_id: str, limit: int = 6) -> list:
-    try:
-        # Match fields: id, customerWhatsappId, role, content, createdAt
-        query = text("""
-            SELECT role::text, content 
-            FROM "ConversationMessage" 
-            WHERE "customerWhatsappId" = :customer_id 
-            ORDER BY "createdAt" DESC 
-            LIMIT :limit
-        """)
-        result = db.execute(query, {"customer_id": customer_id, "limit": limit}).fetchall()
-        formatted_messages = [{"role": row[0].lower(), "content": row[1]} for row in result]
-        formatted_messages.reverse()
-        return formatted_messages
-    except Exception as e:
-        db.rollback()
-        print(f"Neon Raw SQL Error: {str(e)}")
-        return []
-
 def format_history_for_openai(history: list, user_msg: str) -> list:
     formatted = []
-    for msg in history:
+    history_to_format = list(history)
+    has_latest = False
+    if history_to_format:
+        last_msg = history_to_format[-1]
+        last_role = last_msg.get("role") if isinstance(last_msg, dict) else last_msg.role
+        if last_role == "user":
+            has_latest = True
+            
+    for msg in history_to_format:
         msg_role = msg.get("role") if isinstance(msg, dict) else msg.role
         msg_content = msg.get("content") if isinstance(msg, dict) else msg.content
         role = "assistant" if msg_role == "assistant" else "user"
         formatted.append({"role": role, "content": msg_content})
-    formatted.append({"role": "user", "content": user_msg})
+        
+    if not has_latest:
+        formatted.append({"role": "user", "content": user_msg})
     return formatted
 
 def format_history_for_gemini(history: list, user_msg: str) -> list:
     formatted = []
-    for msg in history:
+    history_to_format = list(history)
+    has_latest = False
+    if history_to_format:
+        last_msg = history_to_format[-1]
+        last_role = last_msg.get("role") if isinstance(last_msg, dict) else last_msg.role
+        if last_role == "user":
+            has_latest = True
+            
+    for msg in history_to_format:
         msg_role = msg.get("role") if isinstance(msg, dict) else msg.role
         msg_content = msg.get("content") if isinstance(msg, dict) else msg.content
         role = "model" if msg_role == "assistant" else "user"
@@ -122,13 +118,39 @@ def format_history_for_gemini(history: list, user_msg: str) -> list:
                 parts=[types.Part.from_text(text=msg_content)]
             )
         )
-    formatted.append(
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=user_msg)]
+        
+    if not has_latest:
+        formatted.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=user_msg)]
+            )
         )
-    )
     return formatted
+
+
+def extract_action_from_text(text: str) -> tuple[str, dict | None]:
+    if not text:
+        return "", None
+
+    # Try to find a JSON block in the text
+    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+    if json_match:
+        try:
+            import json
+            action_data = json.loads(json_match.group(0))
+            # Validate that it has the expected format
+            if isinstance(action_data, dict) and "type" in action_data:
+                # Remove the JSON string from the user-facing reply so they don't see raw JSON in WhatsApp
+                clean_text = text.replace(json_match.group(0), "").strip()
+                # Clean up any surrounding quotes/markdown from the text
+                clean_text = re.sub(r'```json\s*```', '', clean_text).strip()
+                clean_text = re.sub(r'```\s*```', '', clean_text).strip()
+                clean_text = clean_text.strip("`").strip()
+                return clean_text, action_data
+        except Exception:
+            pass
+    return text, None
 
 
 # ----------------------------------------------------------------
@@ -185,7 +207,7 @@ async def call_tier3_openrouter(openai_messages: list, system_instruction: str) 
 @router.post("/bot", response_model=schemas.ChatResponse)
 async def whatsapp_webhook(
     payload: schemas.ChatRequest, 
-    business_id: str,
+    business_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     # TODO : Check if the headers contains the valid secret key 
@@ -204,93 +226,160 @@ async def whatsapp_webhook(
             reply="I'm flagging your question for the business owner right now. Hang tight!",
             action={"type": "HUMAN_HANDOFF"}
         )
-    system_instruction = ""
+    
+    # Fetch business data via internal TS API
+    biz_data = None
+    if business_id and business_id != "None":
+        try:
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
+            headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
+            with httpx.Client() as client_http:
+                resp = client_http.get(f"{ts_base_url}/internal/business/{business_id}", headers=headers, timeout=10.0)
+                if resp.status_code == 200:
+                    from types import SimpleNamespace
+                    biz_data = SimpleNamespace(**resp.json())
+        except Exception as e:
+            print(f"Error fetching business details from TS: {e}")
+    
+    # Determine the conversational state context
+    state = payload.state or ("CUSTOMER_BROWSING" if business_id and business_id != "None" else "INTENT_SELECTION")
 
-    if business_id:
-        business_service = BusinessService(db)
-        biz_data = business_service.get_business_by_id(business_id)
-
-        if not biz_data:
-            return schemas.ChatResponse(
-                reply="Sorry, I can't find the business you're talking to. Please try again."
-            )
-        
-        system_instruction += (
-            f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
+    # If in CUSTOMER_BROWSING state, a business must exist
+    if state == "CUSTOMER_BROWSING" and not biz_data:
+        return schemas.ChatResponse(
+            reply="Sorry, I can't find the business you're talking to. Please try again."
         )
     
-    system_instruction += (
-        f"Attempt to not deviate too much from primary assignment which is to be an assistant.\n"
-        f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
-        f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
-        f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
-        f"When a payment virtual account is created, present the bank name, account number, account name, amount, and the payment_reference clearly to the customer."
-    ) 
-    
+    # Determine system instruction based on session state
+    if state == "KYC_NAME":
+        system_instruction = (
+            "You are the PayMate onboarding assistant. The user is currently in the KYC name collection flow.\n"
+            "Your task is to extract the user's full name from their input.\n"
+            "If they provided a name (e.g., 'Divine', 'My name is Divine', etc.), extract the clean name and return it using the action payload format:\n"
+            '{"type": "SET_KYC_NAME", "payload": {"name": "<extracted name>"}}\n'
+            "In your reply, say something welcoming and confirm you've got their name, then ask for their email (e.g., 'Nice to meet you, Divine! What is your email address?').\n"
+            "If they didn't provide a valid name or their input is unclear, politely ask them to state their name clearly."
+        )
+    elif state == "KYC_EMAIL":
+        user_name = payload.data.get("name", "there") if payload.data else "there"
+        system_instruction = (
+            "You are the PayMate onboarding assistant. The user is currently in the KYC email collection flow.\n"
+            f"The user's name is '{user_name}'. You MUST address the user by this name in your responses.\n"
+            "Your task is to extract the user's email address from their input.\n"
+            "If they provided an email (e.g., 'my email is divine@example.com', 'divine@example.com', etc.), extract it.\n\n"
+            "Additionally, look at the very beginning of the chat history (the first user message before name/email questions).\n"
+            "If the user initially expressed a specific intent (like wanting to buy products, search for a shop, register a business, or manage a catalog):\n"
+            f"- Acknowledge that request in your reply (e.g., 'You are all set, {user_name}! I saw you wanted to buy shoes, so I am triggering the service finder for you.').\n"
+            "- Return the action with a 'next_command' in the payload:\n"
+            '  {"type": "SET_KYC_EMAIL", "payload": {"email": "<extracted email>", "next_command": "<command_name>"}}\n'
+            "  Where <command_name> is one of: 'find_service' (if they want to buy/browse/search), 'register_business' (if they want to sell/register), or 'manage_catalog' (if they want to add/remove products).\n"
+            f"If they did not express any specific intent initially, just reply confirming they are set up (e.g., 'You are all set, {user_name}!'), and return:\n"
+            '  {"type": "SET_KYC_EMAIL", "payload": {"email": "<extracted email>"}}\n\n'
+            "If they didn't provide a valid email, politely ask them to try again with a valid email address."
+        )
+    elif state == "INTENT_SELECTION":
+        biz_name_part = f" for '{biz_data.name}'" if biz_data else ""
+        system_instruction = (
+            f"You are PayMate AI, the platform concierge and store assistant{biz_name_part}.\n"
+            "You have context on all administrative and catalog commands valid in the main menu:\n"
+            "- register_business: Start the onboarding flow to set up/register a new business.\n"
+            "- find_service: Find, browse, or search for other stores/services (e.g., if a user wants to buy something, browse shops, or find products).\n"
+            "- manage_catalog: Open the menu to add, remove, or view items in their business catalog.\n"
+            "- delete_business: Trigger the business deletion workflow.\n"
+            "- main_menu: Go back to the main menu.\n\n"
+            "Analyze the user's input to determine their intent:\n"
+            "1. If they express intent to buy products, search for a shop, or browse goods (e.g. 'I want to buy XYZ', 'how do I find a store', etc.), "
+            "respond politely saying you will trigger the service finder, and return the action payload:\n"
+            '{"type": "TRIGGER_COMMAND", "payload": {"command": "find_service"}}\n'
+            "2. If they want to register or set up a business (e.g. 'register my store', 'sell on paymate', etc.), "
+            "respond saying you will start registration, and return the action payload:\n"
+            '{"type": "TRIGGER_COMMAND", "payload": {"command": "register_business"}}\n'
+            "3. If they want to manage their store catalog generally (e.g. 'manage catalog'), "
+            "respond saying you are opening catalog manager, and return the action payload:\n"
+            '{"type": "TRIGGER_COMMAND", "payload": {"command": "manage_catalog"}}\n'
+            "  - If they explicitly want to add a product or item (e.g. 'add item', 'add product', 'new product'), "
+            "return the action payload:\n"
+            '{"type": "TRIGGER_COMMAND", "payload": {"command": "add_item"}}\n'
+            "  - If they explicitly want to remove a product or item (e.g. 'remove item', 'delete product'), "
+            "return the action payload:\n"
+            '{"type": "TRIGGER_COMMAND", "payload": {"command": "remove_item"}}\n'
+            "  - If they explicitly want to view their catalog (e.g. 'view catalog', 'show products'), "
+            "return the action payload:\n"
+            '{"type": "TRIGGER_COMMAND", "payload": {"command": "view_catalog"}}\n'
+            "4. If they want to delete their business (e.g. 'delete my business'), "
+            "respond saying you are initiating deletion, and return the action payload:\n"
+            '{"type": "TRIGGER_COMMAND", "payload": {"command": "delete_business"}}\n'
+            "5. If they are just chatting or greeting you, respond contextually to guide them about the options available."
+        )
+    else: # CUSTOMER_BROWSING
+        system_instruction = (
+            f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
+            f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
+            f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
+            f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
+            f"When a payment virtual account is created, present the bank name, account number, account name, amount, and the payment_reference clearly to the customer."
+        )
+
     action_payload = None
 
     def get_business_details() -> dict:
         try:
-            biz_service = BusinessService(db) 
-            business = biz_service.get_business_by_id(business_id=business_id)
-            if not business:
-                return {"status": "error", "message": f"Business with ID {business_id} not found."}
-            return {
-                "business_id": business.id,
-                "name": business.name,
-                "service": business.service,
-                "state": business.state,
-                "city": business.city,
-                "address": business.address,
-                "phone": business.phone,
-            }
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
+            headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
+            with httpx.Client() as client_http:
+                resp = client_http.get(f"{ts_base_url}/internal/business/{business_id}", headers=headers, timeout=10.0)
+                if resp.status_code == 200:
+                    return resp.json()
+                return {"status": "error", "message": "Business not found."}
         except Exception as e:
             return {"status": "error", "message": f"Error retrieving business details: {str(e)}"}
 
     def search_products(query: str = "") -> dict:
         try:
-            prod_service = ProductService(db)
-            products = prod_service.get_available_products(business_id=business_id)
-            if query:
-                q = query.lower()
-                products = [p for p in products if q in p.name.lower() or (p.description and q in p.description.lower())]
-            return {
-                "products": [
-                    {
-                        "product_id": p.id,
-                        "name": p.name,
-                        "description": p.description,
-                        "price": p.price,
-                        "stock_quantity": p.stock_quantity
-                    } for p in products
-                ]
-            }
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
+            headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
+            with httpx.Client() as client_http:
+                resp = client_http.get(
+                    f"{ts_base_url}/internal/business/{business_id}/products",
+                    params={"query": query},
+                    headers=headers,
+                    timeout=10.0
+                )
+                if resp.status_code == 200:
+                    return {"products": resp.json()}
+                return {"products": []}
         except Exception as e:
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
     def place_order(items: list[dict], customer_name: str = "Customer") -> dict:
-        from schemas.order import OrderCreate, OrderItemCreate
         try:
-            order_items = [
-                OrderItemCreate(product_id=int(item["product_id"]), quantity=int(item["quantity"]))
-                for item in items
-            ]
-            order_data = OrderCreate(
-                business_id=business_id,
-                customer_name=customer_name,
-                items=order_items
-            )
-            order_service = OrderService(db)
-            order = order_service.create_order(order_data)
-            return {
-                "status": "success",
-                "order_id": order.id,
-                "total_amount": order.total_amount,
-                "order_status": order.status,
-                "message": f"Order {order.id} placed successfully. Total amount is NGN {order.total_amount}."
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
+            headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
+            payload_data = {
+                "business_id": business_id,
+                "customer_name": customer_name,
+                "items": [
+                    {"product_id": str(item["product_id"]), "quantity": int(item["quantity"])}
+                    for item in items
+                ]
             }
-        except ValueError as e:
-            return {"status": "error", "message": str(e)}
+            with httpx.Client() as client_http:
+                resp = client_http.post(
+                    f"{ts_base_url}/internal/orders",
+                    json=payload_data,
+                    headers=headers,
+                    timeout=10.0
+                )
+                if resp.status_code == 200:
+                    order = resp.json()
+                    return {
+                        "status": "success",
+                        "order_id": order["id"],
+                        "total_amount": order["total_amount"],
+                        "order_status": order["status"],
+                        "message": f"Order {order['id']} placed successfully. Total amount is NGN {order['total_amount']}."
+                    }
+                return {"status": "error", "message": resp.text}
         except Exception as e:
             return {"status": "error", "message": f"Failed to place order: {str(e)}"}
 
@@ -321,7 +410,7 @@ async def whatsapp_webhook(
             action_payload = {
                 "type": "COLLECT_PAYMENT",
                 "amount": int(payment.amount),
-                "business_name": biz_data.name,
+                "business_name": biz_data.name if biz_data else "Store",
                 "payment_reference": payment.reference
             }
             
@@ -381,19 +470,22 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Failed to verify payment: {str(e)}"}
 
-    recent_history = fetch_recent_history(db, payload.customerId, limit=6)
-    openai_messages = format_history_for_openai(recent_history, sanitized_message)
-    gemini_messages = format_history_for_gemini(recent_history, sanitized_message)
+    # Use history passed in from TS service (already includes current user message)
+    openai_messages = format_history_for_openai(payload.history, sanitized_message)
+    gemini_messages = format_history_for_gemini(payload.history, sanitized_message)
 
     ai_reply = None
     session_key = f"{payload.customerId}:{business_id}"
+
+    print(f"DEBUG BOT: client={client is not None}, state={state}, business_id={business_id}")
+    print(f"DEBUG GEMINI MESSAGES: {gemini_messages}")
 
     if client:
         try:
             max_turns = 5
             current_turn = 0
             current_messages = list(gemini_messages)
-            tools_list = []
+            tools_list = [get_business_details, search_products, place_order, create_payment_virtual_account, verify_payment_status] if state not in ["KYC_NAME", "KYC_EMAIL", "INTENT_SELECTION"] else None
 
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
@@ -452,8 +544,10 @@ async def whatsapp_webhook(
                     )
                 )
 
+            print(f"DEBUG GEMINI RESPONSE: candidates={response.candidates}, text={repr(response.text)}")
             ai_reply = response.text
         except Exception as e:
+            print(f"DEBUG GEMINI EXCEPTION ({type(e).__name__}): {e}")
             if "503" not in str(e) and "UNAVAILABLE" not in str(e).upper():
                 raise HTTPException(status_code=500, detail=str(e))
 
@@ -478,37 +572,11 @@ async def whatsapp_webhook(
                 action=None
             )
 
-    FAILURE_TRACKER[session_key] = 0
+    # Clean the reply and extract action payload if present in the text response
+    ai_reply, extracted_action = extract_action_from_text(ai_reply)
+    if extracted_action:
+        action_payload = extracted_action
 
-    # INSERT QUESTION & ANSWER TO CONVERSATION HISTORY
-    try:
-        session_check = text("""
-            SELECT 1 FROM "CustomerSession" WHERE "customerWhatsappId" = :customer_id LIMIT 1
-        """)
-        has_session = db.execute(session_check, {"customer_id": payload.customerId}).fetchone()
-        
-        if not has_session:
-            create_session = text("""
-                INSERT INTO "CustomerSession" ("customerWhatsappId", "activeBusinessId", state, data, "updatedAt")
-                VALUES (:customer_id, :business_id, 'IDLE'::"SessionState", '{}'::jsonb, NOW())
-            """)
-            db.execute(create_session, {"customer_id": payload.customerId, "business_id": business_id})
-            db.commit()
-            
-        insert_msg = text("""
-            INSERT INTO "ConversationMessage" (id, "customerWhatsappId", role, content) 
-            VALUES (:id, :customer_id, :role, :content)
-        """)
-        
-        user_msg_id = str(uuid.uuid4())
-        ai_msg_id = str(uuid.uuid4())
-        
-        db.execute(insert_msg, {"id": user_msg_id, "customer_id": payload.customerId, "role": "user", "content": sanitized_message})
-        db.execute(insert_msg, {"id": ai_msg_id, "customer_id": payload.customerId, "role": "assistant", "content": ai_reply})
-        db.commit()
-        
-    except Exception as db_err:
-        db.rollback()
-        print(f"Failed to resolve schema context or save turns to Neon: {db_err}")
+    FAILURE_TRACKER[session_key] = 0
         
     return schemas.ChatResponse(reply=ai_reply, action=action_payload)
