@@ -1,11 +1,13 @@
 import logging
 import uuid
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from models.payment import Payment, VirtualAccount
+from models.order import Order
 from services.alatpay_service import ALATPayService
 from services.order_service import OrderService
+from services.product_service import ProductService
 from datetime import datetime, timedelta, timezone
 
 
@@ -15,6 +17,7 @@ class PaymentService:
     def __init__(self, db: Session):
         self.db = db
         self.order_service = OrderService(db)
+        self.product_service = ProductService(db)
 
     def create_payment(self, order_id: int, amount: float) -> Payment:
         reference = str(uuid.uuid4())
@@ -65,12 +68,17 @@ class PaymentService:
         return alatpay_response
 
     async def verify_and_update_payment(self, reference: str) -> Payment | None:
-        db_payment = self.db.query(Payment).filter(Payment.reference == reference).first()
+        db_payment = (
+            self.db.query(Payment)
+            .options(joinedload(Payment.order).joinedload(Order.items))
+            .filter(Payment.reference == reference)
+            .first()
+        )
         if not db_payment:
             return None
 
         # Verify with ALATPay
-        try :
+        try:
             now = datetime.now(timezone.utc)
             # 2. Establish the cutoff threshold (24 hours ago)
             cutoff_time = now - timedelta(days=1)
@@ -82,13 +90,13 @@ class PaymentService:
                 logger.info(f"Payment verification called for reference: {reference}")
                 db_payment.status = "successful"
                 db_payment.gateway_response = str(verification)
-
+                order = db_payment.order
                 # Update order status
                 self.order_service.update_order_status(db_payment.order_id, "paid")
 
-                # Update inventory
-                # TODO: call the ts service to update catalog stock
-                # self.order_service.update_inventory_on_payment(db_payment.order_id)
+                # Update inventory in the TS service catalog
+                for item in order.items:
+                    self.product_service.update_stock(item.product_id, item.quantity, "subtract")
 
             elif verification["status"] == "failed":
                 db_payment.status = "failed"
