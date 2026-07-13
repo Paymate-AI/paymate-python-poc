@@ -210,6 +210,7 @@ async def whatsapp_webhook(
     business_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    # TODO : Check if the headers contains the valid secret key 
     sanitized_message = sanitize_input(payload.message)
     if not sanitized_message:
         return schemas.ChatResponse(
@@ -220,7 +221,7 @@ async def whatsapp_webhook(
     if guardrail_triggered:
         return schemas.ChatResponse(reply=guardrail_reply)
 
-    if re.search(r'\b(human|agent|support|talk to owner|help)\b', sanitized_message.lower()):
+    if not sanitized_message:
         return schemas.ChatResponse(
             reply="I'm flagging your question for the business owner right now. Hang tight!",
             action={"type": "HUMAN_HANDOFF"}

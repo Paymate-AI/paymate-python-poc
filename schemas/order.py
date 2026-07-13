@@ -1,15 +1,15 @@
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
-
+from decimal import Decimal
 
 class OrderItemBase(BaseModel):
-    product_id: int
+    product_id: str
     quantity: int
 
 
 class OrderItemCreate(OrderItemBase):
-    pass
+    price : float
 
 
 class OrderItemResponse(OrderItemBase):
@@ -22,7 +22,7 @@ class OrderItemResponse(OrderItemBase):
 
 class OrderBase(BaseModel):
     business_id: str
-    customer_name: Optional[str] = None
+    customer_whatsapp_id: Optional[str] = None
 
 
 class OrderCreate(OrderBase):

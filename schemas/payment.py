@@ -21,7 +21,7 @@ class PaymentResponse(BaseModel):
     amount: float
     reference: str
     status: str
-    transaction_id: str
+    transaction_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     virtual_account: Optional[VirtualAccountResponse] = None
