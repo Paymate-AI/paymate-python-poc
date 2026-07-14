@@ -18,7 +18,7 @@ async def get_businesses(
     skip: int = 0,
     limit: int = 100
 ):
-    return business_service.get_all_businesses(skip, limit)
+    return await business_service.get_all_businesses(skip, limit)
 
 
 @router.get(
@@ -32,7 +32,7 @@ async def get_available_businesses(
     skip: int = 0,
     limit: int = 100
 ):
-    return business_service.get_available_businesses(skip, limit)
+    return await business_service.get_available_businesses(skip, limit)
 
 
 @router.get(
@@ -45,7 +45,7 @@ async def get_business(
     business_id: int,
     business_service: Annotated[BusinessService, Depends(get_business_service)]
 ):
-    business = business_service.get_business_by_id(business_id)
+    business = await business_service.get_business_by_id(business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return business
@@ -61,7 +61,7 @@ async def get_business_by_business_id(
     business_id: str,
     business_service: Annotated[BusinessService, Depends(get_business_service)]
 ):
-    business = business_service.get_business_by_business_id(business_id)
+    business = await business_service.get_business_by_business_id(business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return business
@@ -77,7 +77,7 @@ async def get_business_by_user(
     user_id: int,
     business_service: Annotated[BusinessService, Depends(get_business_service)]
 ):
-    business = business_service.get_business_by_user_id(user_id)
+    business = await business_service.get_business_by_user_id(user_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found for this user")
     return business
@@ -95,7 +95,7 @@ async def create_business_for_user(
     business: BusinessCreate,
     business_service: Annotated[BusinessService, Depends(get_business_service)]
 ):
-    return business_service.create_business(business, user_id)
+    return await business_service.create_business(business, user_id)
 
 
 @router.put(
@@ -109,7 +109,7 @@ async def update_business(
     business: BusinessUpdate,
     business_service: Annotated[BusinessService, Depends(get_business_service)]
 ):
-    updated_business = business_service.update_business(business_id, business)
+    updated_business = await business_service.update_business(business_id, business)
     if not updated_business:
         raise HTTPException(status_code=404, detail="Business not found")
     return updated_business

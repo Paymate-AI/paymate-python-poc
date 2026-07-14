@@ -18,7 +18,7 @@ async def create_user_with_business(
     data: UserWithBusinessCreate,
     user_service: Annotated[UserService, Depends(get_user_service)]
 ):
-    return user_service.create_user_with_business(data)
+    return await user_service.create_user_with_business(data)
 
 
 @router.post(
@@ -32,7 +32,7 @@ async def create_user(
     user: "UserCreate",
     user_service: Annotated[UserService, Depends(get_user_service)]
 ):
-    return user_service.create_user(user)
+    return await user_service.create_user(user)
 
 
 @router.get(
@@ -46,7 +46,7 @@ async def get_users(
     skip: int = 0,
     limit: int = 10
 ):
-    return user_service.get_all_users(skip, limit)
+    return await user_service.get_all_users(skip, limit)
 
 
 @router.get(
@@ -59,7 +59,7 @@ async def get_user(
     user_id: int,
     user_service: Annotated[UserService, Depends(get_user_service)]
 ):
-    user = user_service.get_user_by_id(user_id)
+    user = await user_service.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user

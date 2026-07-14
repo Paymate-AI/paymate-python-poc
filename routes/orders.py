@@ -19,7 +19,7 @@ async def create_order(
     order_service: Annotated[OrderService, Depends(get_order_service)]
 ):
     try:
-        return order_service.create_order(order)
+        return await order_service.create_order(order)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -34,7 +34,7 @@ async def get_order(
     order_id: int,
     order_service: Annotated[OrderService, Depends(get_order_service)]
 ):
-    order = order_service.get_order(order_id)
+    order = await order_service.get_order(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
@@ -49,5 +49,5 @@ async def get_order(
 async def get_orders(
     order_service: Annotated[OrderService, Depends(get_order_service)]
 ):
-    orders = order_service.get_orders()
+    orders = await order_service.get_orders()
     return orders

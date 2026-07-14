@@ -1,7 +1,9 @@
 import logging
 import uuid
 from fastapi import HTTPException
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 from sqlalchemy.exc import IntegrityError
 from models.payment import Payment, VirtualAccount
 from models.order import Order
@@ -14,12 +16,12 @@ from datetime import datetime, timedelta, timezone
 logger = logging.getLogger(__name__)
 
 class PaymentService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.order_service = OrderService(db)
         self.product_service = ProductService(db)
 
-    def create_payment(self, order_id: int, amount: float) -> Payment:
+    async def create_payment(self, order_id: int, amount: float) -> Payment:
         reference = str(uuid.uuid4())
         try:
             db_payment = Payment(
@@ -28,16 +30,18 @@ class PaymentService:
                 reference=reference
             )
             self.db.add(db_payment)
-            self.db.commit()
-            self.db.refresh(db_payment)
+            await self.db.commit()
+            await self.db.refresh(db_payment)
             return db_payment
         except IntegrityError as e:
-            self.db.rollback()
-            return self.db.query(Payment).filter(Payment.order_id == order_id).first()
+            await self.db.rollback()
+            result = await self.db.execute(select(Payment).where(Payment.order_id == order_id))
+            return result.scalars().first()
             
 
     async def generate_payment_virtual_account(self, payment_id: int, customer_whatsapp_id: str):
-        db_payment = self.db.query(Payment).filter(Payment.id == payment_id).first()
+        result = await self.db.execute(select(Payment).where(Payment.id == payment_id))
+        db_payment = result.scalars().first()
         if not db_payment:
             raise ValueError("Payment not found")
 
@@ -60,20 +64,20 @@ class PaymentService:
                 expiry_date=expiry_date
             )
             self.db.add(db_virtual_account)
-            self.db.commit()
-            self.db.refresh(db_payment)
+            await self.db.commit()
+            await self.db.refresh(db_payment)
         except IntegrityError as e:
             self.db.rollback()
             pass 
         return alatpay_response
 
     async def verify_and_update_payment(self, reference: str) -> Payment | None:
-        db_payment = (
-            self.db.query(Payment)
+        result = await self.db.execute(
+            select(Payment)
             .options(joinedload(Payment.order).joinedload(Order.items))
-            .filter(Payment.reference == reference)
-            .first()
+            .where(Payment.reference == reference)
         )
+        db_payment = result.scalars().first()
         if not db_payment:
             return None
 
@@ -92,11 +96,11 @@ class PaymentService:
                 db_payment.gateway_response = str(verification)
                 order = db_payment.order
                 # Update order status
-                self.order_service.update_order_status(db_payment.order_id, "paid")
+                await self.order_service.update_order_status(db_payment.order_id, "paid")
 
                 # Update inventory in the TS service catalog
                 for item in order.items:
-                    self.product_service.update_stock(item.product_id, item.quantity, "subtract")
+                    await self.product_service.update_stock(item.product_id, item.quantity, "subtract")
 
             elif verification["status"] == "failed":
                 db_payment.status = "failed"
@@ -107,12 +111,14 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Unexpected error verifying {reference}: {e}")
 
-        self.db.commit()
-        self.db.refresh(db_payment)
+        await self.db.commit()
+        await self.db.refresh(db_payment)
         return db_payment
 
-    def get_payment_by_reference(self, reference: str) -> Payment | None:
-        return self.db.query(Payment).filter(Payment.reference == reference).first()
+    async def get_payment_by_reference(self, reference: str) -> Payment | None:
+        result = await self.db.execute(select(Payment).where(Payment.reference == reference))
+        return result.scalars().first()
 
-    def get_pending_payments(self) -> list[Payment]:
-        return self.db.query(Payment).filter(Payment.status == "pending").all()
+    async def get_pending_payments(self) -> list[Payment]:
+        result = await self.db.execute(select(Payment).where(Payment.status == "pending"))
+        return result.scalars().all()

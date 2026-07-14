@@ -18,7 +18,7 @@ async def create_product(
     product: ProductCreate,
     product_service: Annotated[ProductService, Depends(get_product_service)]
 ):
-    return product_service.create_product(product)
+    return await product_service.create_product(product)
 
 
 @router.get(
@@ -31,7 +31,7 @@ async def get_product(
     product_id: int,
     product_service: Annotated[ProductService, Depends(get_product_service)]
 ):
-    product = product_service.get_product(product_id)
+    product = await product_service.get_product(product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
@@ -49,7 +49,7 @@ async def get_products_by_business(
     skip: int = 0,
     limit: int = 100
 ):
-    return product_service.get_products_by_business(business_id, skip, limit)
+    return await product_service.get_products_by_business(business_id, skip, limit)
 
 
 @router.get(
@@ -64,7 +64,7 @@ async def get_available_products(
     skip: int = 0,
     limit: int = 100,
 ):
-    return product_service.get_available_products(business_id, skip, limit)
+    return await product_service.get_available_products(business_id, skip, limit)
 
 
 @router.get(
@@ -79,7 +79,7 @@ async def get_out_of_stock_products(
     skip: int = 0,
     limit: int = 100
 ):
-    return product_service.get_out_of_stock_products(business_id, skip, limit)
+    return await product_service.get_out_of_stock_products(business_id, skip, limit)
 
 
 @router.put(
@@ -93,7 +93,7 @@ async def update_product(
     product_id: int,
     product: ProductUpdate,
 ):
-    updated_product = product_service.update_product(product_id, product)
+    updated_product = await product_service.update_product(product_id, product)
     if not updated_product:
         raise HTTPException(status_code=404, detail="Product not found")
     return updated_product

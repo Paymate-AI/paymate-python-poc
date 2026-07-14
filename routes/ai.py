@@ -5,8 +5,9 @@ import inspect
 import asyncio
 from typing import Optional
 from fastapi import HTTPException, status, APIRouter, Depends
-from sqlalchemy.orm import Session
-from database.config import get_db
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from database.config import get_async_db
 from google import genai
 from google.genai import types
 import schemas
@@ -206,9 +207,9 @@ async def call_tier3_openrouter(openai_messages: list, system_instruction: str) 
 # ----------------------------------------------------------------
 @router.post("/bot", response_model=schemas.ChatResponse)
 async def whatsapp_webhook(
-    payload: schemas.ChatRequest, 
+    payload: schemas.ChatRequest,
     business_id: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_async_db)
 ):
     # TODO : Check if the headers contains the valid secret key 
     sanitized_message = sanitize_input(payload.message)
@@ -387,12 +388,12 @@ async def whatsapp_webhook(
         nonlocal action_payload
         try:
             order_service = OrderService(db)
-            order = order_service.get_order(order_id)
+            order = await order_service.get_order(order_id)
             if not order:
                 return {"status": "error", "message": f"Order with ID {order_id} not found."}
             
             payment_service = PaymentService(db)
-            payment = payment_service.create_payment(order_id, order.total_amount)
+            payment = await payment_service.create_payment(order_id, order.total_amount)
             
             if payment.virtual_account:
                 account_data = {
@@ -435,14 +436,14 @@ async def whatsapp_webhook(
             if not reference:
                 from models.payment import Payment
                 from models.order import Order
-                latest_pending = (
-                    db.query(Payment)
+                result = await db.execute(
+                    select(Payment)
                     .join(Order)
-                    .filter(Order.business_id == business_id)
-                    .filter(Payment.status == "pending")
+                    .where(Order.business_id == business_id)
+                    .where(Payment.status == "pending")
                     .order_by(Payment.created_at.desc())
-                    .first()
                 )
+                latest_pending = result.scalars().first()
                 if latest_pending:
                     reference = latest_pending.reference
                 else:

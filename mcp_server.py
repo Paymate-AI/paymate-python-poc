@@ -1,7 +1,7 @@
 import sys
 import json
 import asyncio
-from database.config import SessionLocal
+from database.config import AsyncSessionLocal
 from services.product_service import ProductService
 from services.order_service import OrderService
 from services.payment_service import PaymentService
@@ -88,17 +88,16 @@ TOOLS = [
 ]
 
 async def execute_tool(name: str, arguments: dict) -> dict:
-    db = SessionLocal()
-    try:
+    async with AsyncSessionLocal() as db:
         if name == "search_products":
             business_id = arguments.get("business_id")
             query = arguments.get("query", "")
             prod_service = ProductService(db)
-            products = prod_service.get_available_products(business_id=business_id)
+            products = await prod_service.get_available_products(business_id=business_id)
             if query:
                 q = query.lower()
                 products = [p for p in products if q in p.name.lower() or (p.description and q in p.description.lower())]
-            
+
             return {
                 "content": [
                     {
@@ -122,7 +121,7 @@ async def execute_tool(name: str, arguments: dict) -> dict:
             business_id = arguments.get("business_id")
             customer_name = arguments.get("customer_name", "Customer")
             items = arguments.get("items", [])
-            
+
             order_items = [
                 OrderItemCreate(product_id=int(item["product_id"]), quantity=int(item["quantity"]))
                 for item in items
@@ -134,7 +133,7 @@ async def execute_tool(name: str, arguments: dict) -> dict:
             )
             order_service = OrderService(db)
             try:
-                order = order_service.create_order(order_data)
+                order = await order_service.create_order(order_data)
                 result = {
                     "status": "success",
                     "order_id": order.id,
@@ -159,12 +158,12 @@ async def execute_tool(name: str, arguments: dict) -> dict:
         elif name == "create_payment_virtual_account":
             order_id = int(arguments.get("order_id"))
             order_service = OrderService(db)
-            order = order_service.get_order(order_id)
+            order = await order_service.get_order(order_id)
             if not order:
                 result = {"status": "error", "message": f"Order with ID {order_id} not found."}
             else:
                 payment_service = PaymentService(db)
-                payment = payment_service.create_payment(order_id, order.total_amount)
+                payment = await payment_service.create_payment(order_id, order.total_amount)
                 try:
                     if payment.virtual_account:
                         account_data = {
@@ -187,7 +186,7 @@ async def execute_tool(name: str, arguments: dict) -> dict:
                         "amount": payment.amount,
                         "currency": "NGN"
                     }
-                except BadRequestError as e:
+                except BadRequestError:
                     result = {"status": "error", "message": "Invalid request to generate virtual account"}
                 except Exception as e:
                     result = {"status": "error", "message": f"Failed to generate virtual account: {str(e)}"}
@@ -239,13 +238,10 @@ async def execute_tool(name: str, arguments: dict) -> dict:
                 ]
             }
 
-    finally:
-        db.close()
 
 async def main():
-    # Set standard output to line buffering and ensure clean JSON responses
     sys.stdout.reconfigure(line_buffering=True)
-    
+
     def send_response(response_dict):
         sys.stdout.write(json.dumps(response_dict) + "\n")
         sys.stdout.flush()
@@ -265,17 +261,17 @@ async def main():
             line = await asyncio.to_thread(sys.stdin.readline)
             if not line:
                 break
-            
+
             line = line.strip()
             if not line:
                 continue
-                
+
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 send_error(None, -32700, "Parse error")
                 continue
-                
+
             if not isinstance(msg, dict):
                 send_error(None, -32600, "Invalid Request")
                 continue
@@ -327,6 +323,7 @@ async def main():
         except Exception as e:
             sys.stderr.write(f"Error in main loop: {str(e)}\n")
             sys.stderr.flush()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
