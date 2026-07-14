@@ -1,13 +1,14 @@
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from models.business import Business
 from schemas.business import BusinessCreate, BusinessUpdate
 
 
 class BusinessService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
-    def create_business(self, business_data: BusinessCreate, user_id: int):
+    async def create_business(self, business_data: BusinessCreate, user_id: int):
 
         try:
             db_business = Business(
@@ -20,35 +21,45 @@ class BusinessService:
                 user_id=user_id
             )
             self.db.add(db_business)
-            self.db.commit()
-            self.db.refresh(db_business)
+            await self.db.commit()
+            await self.db.refresh(db_business)
             return db_business
         except Exception:
-            self.db.rollback()
+            await self.db.rollback()
             
             raise
 
-    def get_business_by_id(self, business_id: str):
-        return self.db.query(Business).filter(Business.id == business_id).first()
+    async def get_business_by_id(self, business_id: str):
+        result = await self.db.execute(select(Business).where(Business.id == business_id))
+        return result.scalars().first()
 
-    def get_business_by_business_id(self, business_id: str):
-        return self.db.query(Business).filter(Business.id == business_id).first()
+    async def get_business_by_business_id(self, business_id: str):
+        result = await self.db.execute(select(Business).where(Business.id == business_id))
+        return result.scalars().first()
 
-    def get_business_by_user_id(self, user_id: int):
-        return self.db.query(Business).filter(Business.user_id == user_id).first()
+    async def get_business_by_user_id(self, user_id: int):
+        result = await self.db.execute(select(Business).where(Business.user_id == user_id))
+        return result.scalars().first()
 
-    def get_all_businesses(self, skip: int = 0, limit: int = 10):
-        return self.db.query(Business).offset(skip).limit(limit).all()
+    async def get_all_businesses(self, skip: int = 0, limit: int = 10):
+        result = await self.db.execute(select(Business).offset(skip).limit(limit))
+        return result.scalars().all()
 
-    def get_available_businesses(self, skip: int = 0, limit: int = 10):
-        return self.db.query(Business).filter(Business.is_active == 1).offset(skip).limit(limit).all()
+    async def get_available_businesses(self, skip: int = 0, limit: int = 10):
+        result = await self.db.execute(
+            select(Business)
+            .where(Business.is_active == 1)
+            .offset(skip)
+            .limit(limit)
+        )
+        return result.scalars().all()
 
-    def update_business(self, business_id: str, business_data: BusinessUpdate):
-        db_business = self.get_business_by_id(business_id)
+    async def update_business(self, business_id: str, business_data: BusinessUpdate):
+        db_business = await self.get_business_by_id(business_id)
         if db_business:
             update_data = business_data.model_dump(exclude_unset=True)
             for field, value in update_data.items():
                 setattr(db_business, field, value)
-            self.db.commit()
-            self.db.refresh(db_business)
+            await self.db.commit()
+            await self.db.refresh(db_business)
         return db_business

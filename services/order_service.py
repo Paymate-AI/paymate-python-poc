@@ -1,14 +1,16 @@
-from sqlalchemy.orm import Session
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 from models.order import Order, OrderItem
 from models.product import Product
 from schemas.order import OrderCreate
 
 
 class OrderService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
-    def create_order(self, order_data: OrderCreate) -> Order:
+    async def create_order(self, order_data: OrderCreate) -> Order:
         total_amount = 0.0
         order_items = []
 
@@ -36,37 +38,43 @@ class OrderService:
         )
 
         self.db.add(db_order)
-        self.db.commit()
-        self.db.refresh(db_order)
+        await self.db.commit()
+        await self.db.refresh(db_order)
         return db_order
 
-    def get_order(self, order_id: int) -> Order | None:
-        return self.db.query(Order).filter(Order.id == order_id).first()
+    async def get_order(self, order_id: int) -> Order | None:
+        result = await self.db.execute(select(Order).where(Order.id == order_id))
+        return result.scalars().first()
     
-    def get_orders(self) -> list[Order] | None:
-        return self.db.query(Order).all()
+    async def get_orders(self) -> list[Order] | None:
+        result = await self.db.execute(select(Order))
+        return result.scalars().all()
 
-    def update_order_status(self, order_id: int, status: str) -> Order | None:
-        db_order = self.get_order(order_id)
+    async def update_order_status(self, order_id: int, status: str) -> Order | None:
+        db_order = await self.get_order(order_id)
         if not db_order:
             return None
 
         db_order.status = status
-        self.db.commit()
-        self.db.refresh(db_order)
+        await self.db.commit()
+        await self.db.refresh(db_order)
         return db_order
 
-    def update_inventory_on_payment(self, order_id: int):
-        # TODO: Make a request to the ts service to update the product inventory
-        db_order = self.get_order(order_id)
+    async def update_inventory_on_payment(self, order_id: int):
+        result = await self.db.execute(
+            select(Order).options(joinedload(Order.items)).where(Order.id == order_id)
+        )
+        db_order = result.scalars().first()
         if not db_order:
             return
 
         for item in db_order.items:
-            self.db.query(Product).filter(Product.id == item.product_id).update(
-                {"stock_quantity": Product.stock_quantity - item.quantity}
+            await self.db.execute(
+                update(Product)
+                .where(Product.id == item.product_id)
+                .values(stock_quantity=Product.stock_quantity - item.quantity)
             )
 
-        self.db.commit()
+        await self.db.commit()
 
     

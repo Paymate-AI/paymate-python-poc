@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 # Load environment variables from .env file
 load_dotenv()
 
-from database.config import engine, Base, get_db
+from database.config import AsyncEngine, Base
 from routes.ai import router as ai_router
 from routes.users import router as users_router
 from routes.products import router as products_router
@@ -19,7 +19,8 @@ from routes.businesses import router as businesses_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create database tables on startup
-    Base.metadata.create_all(bind=engine)
+    async with AsyncEngine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
     # Start payment reconciliation background task
     # db_gen = get_db()
