@@ -269,10 +269,15 @@ async def whatsapp_webhook(
             "If they provided an email (e.g., 'my email is divine@example.com', 'divine@example.com', etc.), extract it.\n\n"
             "Additionally, look at the very beginning of the chat history (the first user message before name/email questions).\n"
             "If the user initially expressed a specific intent (like wanting to buy products, search for a shop, register a business, or manage a catalog):\n"
-            f"- Acknowledge that request in your reply (e.g., 'You are all set, {user_name}! I saw you wanted to buy shoes, so I am triggering the service finder for you.').\n"
+            f"- You MUST acknowledge that intent AND transition the user in a SINGLE message. Rules:\n"
+            f"  * If they want to register a business: your reply MUST be a single message that confirms they are set up AND asks for their business name. "
+            f"Use EXACTLY this format: 'You are all set, {user_name}! I can see you wanted to register a business — let\\'s get that set up. What is the name of your business?'\n"
+            f"  * If they want to search, buy, or browse products (e.g., 'I want to buy shoes', 'I want to buy shoes from shop XYZ'), say: 'You are all set, {user_name}! Let me find those products for you...'\n"
             "- Return the action with a 'next_command' in the payload:\n"
-            '  {"type": "SET_KYC_EMAIL", "payload": {"email": "<extracted email>", "next_command": "<command_name>"}}\n'
-            "  Where <command_name> is one of: 'find_service' (if they want to buy/browse/search), 'register_business' (if they want to sell/register), or 'manage_catalog' (if they want to add/remove products).\n"
+            "  * If they want to register a business: {\"type\": \"SET_KYC_EMAIL\", \"payload\": {\"email\": \"<extracted email>\", \"next_command\": \"register_business\"}}\n"
+            "  * If they want to search or buy products, infer the product search term (e.g., 'shoes') and any shop/business code (e.g., 'XYZ' or null) and return:\n"
+            "    {\"type\": \"SET_KYC_EMAIL\", \"payload\": {\"email\": \"<extracted email>\", \"next_command\": \"search_product\", \"search_query\": \"<inferred product name>\", \"business_code\": \"<inferred business code or null>\"}}\n"
+            "  * If they want to manage catalog: {\"type\": \"SET_KYC_EMAIL\", \"payload\": {\"email\": \"<extracted email>\", \"next_command\": \"manage_catalog\"}}\n"
             f"If they did not express any specific intent initially, just reply confirming they are set up (e.g., 'You are all set, {user_name}!'), and return:\n"
             '  {"type": "SET_KYC_EMAIL", "payload": {"email": "<extracted email>"}}\n\n'
             "If they didn't provide a valid email, politely ask them to try again with a valid email address."
@@ -288,13 +293,16 @@ async def whatsapp_webhook(
             "- delete_business: Trigger the business deletion workflow.\n"
             "- main_menu: Go back to the main menu.\n\n"
             "Analyze the user's input to determine their intent:\n"
-            "1. If they express intent to buy products, search for a shop, or browse goods (e.g. 'I want to buy XYZ', 'how do I find a store', etc.), "
-            "respond politely saying you will trigger the service finder, and return the action payload:\n"
-            '{"type": "TRIGGER_COMMAND", "payload": {"command": "find_service"}}\n'
-            "2. If they want to register or set up a business (e.g. 'register my store', 'sell on paymate', etc.), "
+            "1. If they express intent to buy products, search for a shop, or browse goods (e.g. 'I want to buy shoes', 'search for shoes from XYZ', etc.):\n"
+            "   Acknowledge that you are searching/finding it for them, infer the product search query (e.g. 'shoes') and any shop/business code (e.g. 'XYZ' or null), and return the action payload:\n"
+            "   {\"type\": \"SEARCH_PRODUCT\", \"payload\": {\"query\": \"<inferred product query>\", \"business_code\": \"<inferred business code or null>\"}}\n"
+            "2. If they just say they want to find stores or browse shops generally without a product name (e.g., 'find a store', 'show me shops'):\n"
+            "   Respond politely saying you will trigger the service finder, and return the action payload:\n"
+            "   {\"type\": \"TRIGGER_COMMAND\", \"payload\": {\"command\": \"find_service\"}}\n"
+            "3. If they want to register or set up a business (e.g. 'register my store', 'sell on paymate', etc.), "
             "respond saying you will start registration, and return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "register_business"}}\n'
-            "3. If they want to manage their store catalog generally (e.g. 'manage catalog'), "
+            "4. If they want to manage their store catalog generally (e.g. 'manage catalog'), "
             "respond saying you are opening catalog manager, and return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "manage_catalog"}}\n'
             "  - If they explicitly want to add a product or item (e.g. 'add item', 'add product', 'new product'), "
@@ -306,10 +314,10 @@ async def whatsapp_webhook(
             "  - If they explicitly want to view their catalog (e.g. 'view catalog', 'show products'), "
             "return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "view_catalog"}}\n'
-            "4. If they want to delete their business (e.g. 'delete my business'), "
+            "5. If they want to delete their business (e.g. 'delete my business'), "
             "respond saying you are initiating deletion, and return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "delete_business"}}\n'
-            "5. If they are just chatting or greeting you, respond contextually to guide them about the options available."
+            "6. If they are just chatting or greeting you, respond contextually to guide them about the options available."
         )
     else: # CUSTOMER_BROWSING
         system_instruction = (
