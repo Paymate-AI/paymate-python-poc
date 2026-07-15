@@ -403,7 +403,7 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
-    async def place_order(items: list[OrderItemInput], customer_name: str = "Customer") -> dict:
+    def place_order(items: list[OrderItemInput], customer_name: str = "Customer") -> dict:
         """
         Places an order for the customer with the specified items.
         
@@ -461,7 +461,7 @@ async def whatsapp_webhook(
                 items=order_items
             )
             
-            db_order = await order_service.create_order(order_data)
+            db_order = order_service.create_order(order_data)
             
             return {
                 "status": "success",
@@ -492,9 +492,10 @@ async def whatsapp_webhook(
                     "expiry_minutes": 60
                 }
             else:
+                customer_name = payload.data.get("name") if payload.data else None
                 account_data = await payment_service.generate_payment_virtual_account(
                     payment.id,
-                    order.customer_name or "Customer"
+                    customer_name or "Customer"
                 )
                 
             action_payload = {
@@ -602,7 +603,7 @@ async def whatsapp_webhook(
                         if name == "search_products":
                             result = search_products(**args)
                         elif name == "place_order":
-                            result = await place_order(**args)
+                            result = place_order(**args)
                         elif name == "create_payment_virtual_account":
                             result = await create_payment_virtual_account(**args)
                         elif name == "verify_payment_status":

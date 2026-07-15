@@ -62,6 +62,7 @@ class PaymentService:
         except IntegrityError as e:
             self.db.rollback()
             pass 
+        alatpay_response["account_name"] = "Paymate Ai"
         return alatpay_response
 
     async def verify_and_update_payment(self, reference: str) -> Payment | None:

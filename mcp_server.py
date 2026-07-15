@@ -176,7 +176,7 @@ async def execute_tool(name: str, arguments: dict) -> dict:
                     else:
                         account_data = await payment_service.generate_payment_virtual_account(
                             payment.id,
-                            order.customer_name or "Customer"
+                            "Customer"
                         )
                     result = {
                         "status": "success",
