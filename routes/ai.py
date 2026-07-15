@@ -3,7 +3,8 @@ import re
 import httpx
 import inspect
 import asyncio
-from typing import Optional
+from typing import Optional, List
+from pydantic import BaseModel, Field
 from fastapi import HTTPException, status, APIRouter, Depends
 from sqlalchemy.orm import Session
 from database.config import get_db
@@ -201,6 +202,17 @@ async def call_tier3_openrouter(openai_messages: list, system_instruction: str) 
         raise RuntimeError(f"Tier 3 OpenRouter failed")
 
 
+class OrderItemInput(BaseModel):
+    product_id: str = Field(
+        ...,
+        description="The unique string ID of the product/item being ordered. This MUST be the exact product ID returned from product searches."
+    )
+    quantity: int = Field(
+        ...,
+        description="The quantity/number of portions/units of the product being ordered."
+    )
+
+
 # ----------------------------------------------------------------
 # ENDPOINT GATEWAY
 # ----------------------------------------------------------------
@@ -344,6 +356,7 @@ async def whatsapp_webhook(
     else: # CUSTOMER_BROWSING
         system_instruction = (
             f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
+            f"When listing products or recommending items to the customer, always explicitly mention the name of the business you are listing the products from (i.e., '{biz_data.name}').\n"
             f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
             f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
             f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
@@ -390,35 +403,73 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
-    def place_order(items: list[dict], customer_name: str = "Customer") -> dict:
+    async def place_order(items: list[OrderItemInput], customer_name: str = "Customer") -> dict:
+        """
+        Places an order for the customer with the specified items.
+        
+        Args:
+            items: A list of items to order, where each item must contain the 'product_id' and the 'quantity'.
+            customer_name: The name of the customer placing the order. Defaults to 'Customer'.
+            
+        Returns:
+            A dictionary containing the status, order_id, total_amount, and a success or error message.
+        """
         try:
+            # 1. Fetch product details from TS service to get prices
             ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
-            payload_data = {
-                "business_id": business_id,
-                "customer_name": customer_name,
-                "items": [
-                    {"product_id": str(item["product_id"]), "quantity": int(item["quantity"])}
-                    for item in items
-                ]
-            }
+            products = []
+            
             with httpx.Client() as client_http:
-                resp = client_http.post(
-                    f"{ts_base_url}/internal/orders",
-                    json=payload_data,
+                resp = client_http.get(
+                    f"{ts_base_url}/internal/business/{business_id}/products",
                     headers=headers,
                     timeout=10.0
                 )
                 if resp.status_code == 200:
-                    order = resp.json()
-                    return {
-                        "status": "success",
-                        "order_id": order["id"],
-                        "total_amount": order["total_amount"],
-                        "order_status": order["status"],
-                        "message": f"Order {order['id']} placed successfully. Total amount is NGN {order['total_amount']}."
-                    }
-                return {"status": "error", "message": resp.text}
+                    products = resp.json()
+                else:
+                    return {"status": "error", "message": f"Failed to fetch products for pricing: {resp.text}"}
+            
+            # Map product_id to price
+            prices = {str(p["id"]): float(p["price"]) for p in products}
+            
+            # 2. Build order items data
+            from schemas.order import OrderCreate, OrderItemCreate
+            order_items = []
+            for item in items:
+                if isinstance(item, dict):
+                    pid = str(item.get("product_id", ""))
+                    qty = int(item.get("quantity", 0))
+                else:
+                    pid = str(item.product_id)
+                    qty = int(item.quantity)
+                    
+                if pid not in prices:
+                    return {"status": "error", "message": f"Product with ID {pid} not found in catalog"}
+                order_items.append(OrderItemCreate(
+                    product_id=pid,
+                    quantity=qty,
+                    price=prices[pid]
+                ))
+            
+            # 3. Create the order using OrderService
+            order_service = OrderService(db)
+            order_data = OrderCreate(
+                business_id=business_id,
+                customer_whatsapp_id=payload.customerId,
+                items=order_items
+            )
+            
+            db_order = await order_service.create_order(order_data)
+            
+            return {
+                "status": "success",
+                "order_id": db_order.id,
+                "total_amount": db_order.total_amount,
+                "order_status": db_order.status,
+                "message": f"Order {db_order.id} placed successfully. Total amount is NGN {db_order.total_amount}."
+            }
         except Exception as e:
             return {"status": "error", "message": f"Failed to place order: {str(e)}"}
 
@@ -551,7 +602,7 @@ async def whatsapp_webhook(
                         if name == "search_products":
                             result = search_products(**args)
                         elif name == "place_order":
-                            result = place_order(**args)
+                            result = await place_order(**args)
                         elif name == "create_payment_virtual_account":
                             result = await create_payment_virtual_account(**args)
                         elif name == "verify_payment_status":
