@@ -1,6 +1,8 @@
+import os
 import logging
 import uuid
-from fastapi import HTTPException
+from fastapi import HTTPException, status
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -14,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 
 logger = logging.getLogger(__name__)
+
+TS_SERVICE_URL = os.getenv("TS_SERVICE_URL")
 
 class PaymentService:
     def __init__(self, db: AsyncSession):
@@ -122,3 +126,46 @@ class PaymentService:
     async def get_pending_payments(self) -> list[Payment]:
         result = await self.db.execute(select(Payment).where(Payment.status == "pending"))
         return result.scalars().all()
+    
+    async def get_pending_payments_with_orders(self) -> list[Payment]:
+        result = await self.db.execute(
+            select(Payment)
+            .options(joinedload(Payment.order))
+            .where(Payment.status == "pending")
+        )
+        return result.scalars().all()
+    
+    async def send_payment_update_to_user(self, customer_id, message):
+        whatsappToken = os.getenv.WHATSAPP_TOKEN
+        phoneNumberId = os.getenv.PHONE_NUMBER_ID
+
+        if (not whatsappToken or not phoneNumberId) :
+            raise HTTPException(status_code=status.HTTP_202_ACCEPTED, detail='Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID in environment variables')
+        
+        headers = {
+            "Authorization": f'Bearer {whatsappToken}',
+            "Content-Type": "application/json"
+        }
+
+        url = f'https://graph.facebook.com/v25.0/{phoneNumberId}/messages'
+
+
+        payload = {
+            'messaging_product': 'whatsapp',
+            'recipient_type': 'individual',
+            'to': customer_id,
+            'type': 'text',
+            'text': {
+            'preview_url': False,
+            'body': message,
+            },
+        }
+
+        async with httpx.AsyncClient() as httpx_client:
+            try:
+                response = await httpx_client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                logger.info(f"message sent to customer with id {customer_id}")
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error: {e.response.text}")
+                

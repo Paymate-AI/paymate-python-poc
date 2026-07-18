@@ -100,10 +100,14 @@ async def reconcile_payments_task():
     while True:
         async with AsyncSessionLocal() as db:
             payment_service = PaymentService(db)
-            pending_payments = await payment_service.get_pending_payments()
+            pending_payments = await payment_service.get_pending_payments_with_orders()
             for payment in pending_payments:
                 try:
-                    await payment_service.verify_and_update_payment(payment.reference)
+                    db_payment = await payment_service.verify_and_update_payment(payment.reference)
+                    if db_payment.status == "successful":
+                        message = f"your payment of {payment.amount} was successful"
+                        await payment_service.send_payment_update_to_user(payment.order.customer_whatsapp_id, message)
+
                 except Exception as e:
                     logger.error(f"Failed to verify payment: {payment.reference} - {e}")
         await asyncio.sleep(300)  # Check every 5 minutes
