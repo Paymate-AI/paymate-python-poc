@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import httpx
@@ -16,6 +17,7 @@ from services.payment_service import PaymentService
 from services.alatpay_service import BadRequestError
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # --- DYNAMIC CLIENT INITIALIZATION FOR BOTH OF YOU ---
 GCP_PROJECT = os.getenv("GCP_PROJECT_ID")
@@ -244,6 +246,7 @@ async def whatsapp_webhook(
     
     # Determine the conversational state context
     state = payload.state or ("CUSTOMER_BROWSING" if business_id and business_id != "None" else "INTENT_SELECTION")
+    logger.info(f"paload state, {state}")
 
     # If in CUSTOMER_BROWSING state, a business must exist
     if state == "CUSTOMER_BROWSING" and not biz_data:
@@ -251,9 +254,12 @@ async def whatsapp_webhook(
             reply="Sorry, I can't find the business you're talking to. Please try again."
         )
     
+    system_instruction = (
+        "Never invent a product ID. If the customer gives a product name, you must call search_products_by_name with the product name given by the customer to resolve it to a real ID before calling place_order"
+    )
     # Determine system instruction based on session state
     if state == "KYC_NAME":
-        system_instruction = (
+        system_instruction += (
             "You are the PayMate onboarding assistant. The user is currently in the KYC name collection flow.\n"
             "Your task is to extract the user's full name from their input.\n"
             "If they provided a name (e.g., 'Divine', 'My name is Divine', etc.), extract the clean name and return it using the action payload format:\n"
@@ -263,7 +269,7 @@ async def whatsapp_webhook(
         )
     elif state == "KYC_EMAIL":
         user_name = payload.data.get("name", "there") if payload.data else "there"
-        system_instruction = (
+        system_instruction += (
             "You are the PayMate onboarding assistant. The user is currently in the KYC email collection flow.\n"
             f"The user's name is '{user_name}'. You MUST address the user by this name in your responses.\n"
             "Your task is to extract the user's email address from their input.\n"
@@ -280,7 +286,7 @@ async def whatsapp_webhook(
         )
     elif state == "INTENT_SELECTION":
         biz_name_part = f" for '{biz_data.name}'" if biz_data else ""
-        system_instruction = (
+        system_instruction += (
             f"You are PayMate AI, the platform concierge and store assistant{biz_name_part}.\n"
             "You have context on all administrative and catalog commands valid in the main menu:\n"
             "- register_business: Start the onboarding flow to set up/register a new business.\n"
@@ -313,7 +319,7 @@ async def whatsapp_webhook(
             "5. If they are just chatting or greeting you, respond contextually to guide them about the options available."
         )
     else: # CUSTOMER_BROWSING
-        system_instruction = (
+        system_instruction += (
             f"You are PayMate AI, the store assistant for '{biz_data.name}'.\n"
             f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
             f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
@@ -343,6 +349,23 @@ async def whatsapp_webhook(
                 resp = client_http.get(
                     f"{ts_base_url}/internal/business/{business_id}/products",
                     params={"query": query},
+                    headers=headers,
+                    timeout=10.0
+                )
+                if resp.status_code == 200:
+                    return {"products": resp.json()}
+                return {"products": []}
+        except Exception as e:
+            return {"status": "error", "message": f"Error searching products: {str(e)}"}
+
+    def search_products_by_name(self, business_id: int | None, name: str, limit: int = 20) -> list[Product]:
+        try:
+            ts_base_url = TS_SERVICE_URL.replace("/api", "")
+            headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
+            with httpx.Client() as client_http:
+                resp = client_http.get(
+                    f"{ts_base_url}/internal/business/{business_id}/products",
+                    params={"name": name},
                     headers=headers,
                     timeout=10.0
                 )
@@ -486,7 +509,7 @@ async def whatsapp_webhook(
             max_turns = 5
             current_turn = 0
             current_messages = list(gemini_messages)
-            tools_list = [get_business_details, search_products, place_order, create_payment_virtual_account, verify_payment_status] if state not in ["KYC_NAME", "KYC_EMAIL", "INTENT_SELECTION"] else None
+            tools_list = [get_business_details, search_products, search_products_by_name, place_order, create_payment_virtual_account, verify_payment_status] if state not in ["KYC_NAME", "KYC_EMAIL", "INTENT_SELECTION"] else None
 
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
