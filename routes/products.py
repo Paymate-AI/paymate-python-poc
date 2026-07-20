@@ -53,6 +53,21 @@ async def get_products_by_business(
 
 
 @router.get(
+    "/business/{business_id}/search",
+    response_model=List[ProductResponse],
+    summary="Search products by name",
+    description="Search products by name for a specific business"
+)
+async def search_products_by_name(
+    product_service: Annotated[ProductService, Depends(get_product_service)],
+    business_id: str,
+    q: str,
+    limit: int = 20
+):
+    return await product_service.search_products_by_name(q, business_id, limit)
+
+
+@router.get(
     "/business/{business_id}/available",
     response_model=List[ProductResponse],
     summary="Get available products",

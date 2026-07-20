@@ -4,7 +4,8 @@ import re
 import httpx
 import inspect
 import asyncio
-from typing import Optional
+import dependencies
+from typing import Annotated, Optional
 from fastapi import HTTPException, status, APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -210,6 +211,7 @@ async def call_tier3_openrouter(openai_messages: list, system_instruction: str) 
 @router.post("/bot", response_model=schemas.ChatResponse)
 async def whatsapp_webhook(
     payload: schemas.ChatRequest,
+    order_service: Annotated[OrderService, Depends(dependencies.get_order_service)],
     business_id: Optional[str] = None,
     db: AsyncSession = Depends(get_async_db)
 ):
@@ -375,34 +377,25 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
-    def place_order(items: list[dict], customer_name: str = "Customer") -> dict:
+    async def place_order(items: list[schemas.OrderItemCreate], customer_whatsapp_id: str= payload.customerId) -> dict:
         try:
-            ts_base_url = TS_SERVICE_URL.replace("/api", "")
-            headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
-            payload_data = {
-                "business_id": business_id,
-                "customer_name": customer_name,
-                "items": [
-                    {"product_id": str(item["product_id"]), "quantity": int(item["quantity"])}
-                    for item in items
-                ]
-            }
-            with httpx.Client() as client_http:
-                resp = client_http.post(
-                    f"{ts_base_url}/internal/orders",
-                    json=payload_data,
-                    headers=headers,
-                    timeout=10.0
+            order_dto = schemas.OrderCreate(
+                    business_id=business_id, 
+                    customer_whatsapp_id=customer_whatsapp_id,
+                    items = items
                 )
-                if resp.status_code == 200:
-                    order = resp.json()
-                    return {
-                        "status": "success",
-                        "order_id": order["id"],
-                        "total_amount": order["total_amount"],
-                        "order_status": order["status"],
-                        "message": f"Order {order['id']} placed successfully. Total amount is NGN {order['total_amount']}."
-                    }
+            try:
+                order = await order_service.create_order(order_dto)
+        
+                return {
+                    "status": "success",
+                    "order_id": order.id,
+                    "total_amount": order.total_amount,
+                    "order_status": order.status,
+                    "message": f"Order {order.id} placed successfully. Total amount is NGN {order.total_amount}."
+                }
+            except Exception as ex:
+                raise ex
                 return {"status": "error", "message": resp.text}
         except Exception as e:
             return {"status": "error", "message": f"Failed to place order: {str(e)}"}
@@ -535,8 +528,10 @@ async def whatsapp_webhook(
                     try:
                         if name == "search_products":
                             result = search_products(**args)
+                        elif name == "search_products_by_name":
+                            result = search_products_by_name(**args)
                         elif name == "place_order":
-                            result = place_order(**args)
+                            result = await place_order(**args)
                         elif name == "create_payment_virtual_account":
                             result = await create_payment_virtual_account(**args)
                         elif name == "verify_payment_status":
