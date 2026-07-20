@@ -358,7 +358,7 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
-    def search_products_by_name(self, business_id: int | None, name: str, limit: int = 20):
+    def search_products_by_name(business_id: int | None, name: str, limit: int = 20):
         try:
             ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
