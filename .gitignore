@@ -20,3 +20,7 @@ __pycache__/
 .vscode/
 .project
 .pydevproject
+
+paymate.log
+tmp_repro.py
+tmp_verify.py

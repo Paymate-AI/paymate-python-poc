@@ -32,7 +32,7 @@ async def create_payment(
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
-        payment = payment_service.create_payment(order_id, order.total_amount)
+        payment = await payment_service.create_payment(order_id, order.total_amount)
 
     
         payment = await payment_service.generate_payment_virtual_account(

@@ -4,7 +4,8 @@ import re
 import httpx
 import inspect
 import asyncio
-from typing import Optional
+import dependencies
+from typing import Annotated, Optional
 from fastapi import HTTPException, status, APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 # --- DYNAMIC CLIENT INITIALIZATION FOR BOTH OF YOU ---
 GCP_PROJECT = os.getenv("GCP_PROJECT_ID")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 
 if GCP_PROJECT:
     client = genai.Client(
@@ -132,8 +134,19 @@ def format_history_for_gemini(history: list, user_msg: str) -> list:
     return formatted
 
 
-def extract_action_from_text(text: str) -> tuple[str, dict | None]:
+def extract_action_from_text(text: str | dict | None) -> tuple[str, dict | None]:
     if not text:
+        return "", None
+
+    if isinstance(text, dict):
+        if isinstance(text.get("content"), str):
+            text = text["content"]
+        elif isinstance(text.get("message"), dict):
+            text = text["message"].get("content", "")
+        else:
+            return "", None
+
+    if not isinstance(text, str):
         return "", None
 
     # Try to find a JSON block in the text
@@ -179,30 +192,44 @@ async def call_tier2_groq(openai_messages: list, system_instruction: str) -> str
         raise RuntimeError("Tier 2 Groq failed")
 
 
-async def call_tier3_openrouter(openai_messages: list, system_instruction: str) -> str:
-    url = "[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)"
-    api_key = os.getenv("OPENROUTER_API_KEY") 
+async def call_tier3_openrouter(openai_messages: list, system_instruction: str, tools: list) -> dict | str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise ValueError("Tier 3 OpenRouter key missing")
 
     payload = {
-        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
         "messages": [{"role": "system", "content": system_instruction}] + openai_messages,
-        "temperature": 0.2
+        "tools": tools,
+        "temperature": 0.2,
+        "max_tokens": 1024,          # cap output; model default max is 65536, way more than a webhook reply needs
+        "reasoning": {"enabled": False},  # this model exposes chain-of-thought via `reasoning`; turn it off for latency/cost in a sync webhook
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:8000",
+        "HTTP-Referer": "http://localhost:8080",
         "X-Title": "PayMate AI Webhook"
     }
 
-    async with httpx.AsyncClient() as httpx_client:
-        response = await httpx_client.post(url, json=payload, headers=headers, timeout=8.0)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        raise RuntimeError(f"Tier 3 OpenRouter failed")
+    try:
+        # free-tier routing is noticeably slower (p95) than paid providers for this model, so give it real headroom
+        async with httpx.AsyncClient() as httpx_client:
+            response = await httpx_client.post(url, json=payload, headers=headers, timeout=60.0)
+    except httpx.RequestError as e:
+        raise RuntimeError(f"Tier 3 OpenRouter request error: {str(e)}")
 
+    if response.status_code == 429:
+        raise RuntimeError("Tier 3 OpenRouter rate-limited: free-tier daily quota likely exhausted")
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Tier 3 OpenRouter failed: {response.status_code} - {response.text}")
+
+    message = response.json()["choices"][0]["message"]
+    if message.get("tool_calls"):
+        return message
+    return message.get("content")
 
 # ----------------------------------------------------------------
 # ENDPOINT GATEWAY
@@ -210,6 +237,8 @@ async def call_tier3_openrouter(openai_messages: list, system_instruction: str) 
 @router.post("/bot", response_model=schemas.ChatResponse)
 async def whatsapp_webhook(
     payload: schemas.ChatRequest,
+    order_service: Annotated[OrderService, Depends(dependencies.get_order_service)],
+    payment_service : Annotated[PaymentService, Depends(dependencies.get_payment_service)],
     business_id: Optional[str] = None,
     db: AsyncSession = Depends(get_async_db)
 ):
@@ -329,7 +358,12 @@ async def whatsapp_webhook(
 
     action_payload = None
 
-    def get_business_details() -> dict:
+    async def get_business_details() -> dict:
+        """Fetch business metadata from the internal TS API.
+
+        Returns a JSON-like dict containing the business details when the lookup
+        succeeds, or an error structure when the request fails.
+        """
         try:
             ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
@@ -341,7 +375,12 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Error retrieving business details: {str(e)}"}
 
-    def search_products(query: str = "") -> dict:
+    async def search_products(query: str = "") -> dict:
+        """Search the business catalog by query text.
+
+        This function calls the internal TS API to retrieve products matching the
+        provided search query and returns them under a "products" key.
+        """
         try:
             ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
@@ -358,7 +397,12 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
-    def search_products_by_name(business_id: int | None, name: str, limit: int = 20):
+    async def search_products_by_name(business_id: int | None, name: str, limit: int = 20):
+        """Resolve a product name to matching catalog products.
+
+        Uses the internal TS API to search products by exact name or name fragment.
+        The limit parameter is currently unused but may be preserved for future pagination.
+        """
         try:
             ts_base_url = TS_SERVICE_URL.replace("/api", "")
             headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
@@ -375,49 +419,50 @@ async def whatsapp_webhook(
         except Exception as e:
             return {"status": "error", "message": f"Error searching products: {str(e)}"}
 
-    def place_order(items: list[dict], customer_name: str = "Customer") -> dict:
+    async def place_order(items: list[schemas.OrderItemCreate], customer_whatsapp_id: str= payload.customerId) -> dict:
+        """Create a new order for the current business and customer.
+
+        Builds an OrderCreate DTO from the provided items and dispatches it to the
+        order service. Returns a success payload with order details or an error
+        payload when the operation fails.
+        """
         try:
-            ts_base_url = TS_SERVICE_URL.replace("/api", "")
-            headers = {"Authorization": f"Bearer {os.getenv('INTERNAL_SECRET', '')}"}
-            payload_data = {
-                "business_id": business_id,
-                "customer_name": customer_name,
-                "items": [
-                    {"product_id": str(item["product_id"]), "quantity": int(item["quantity"])}
-                    for item in items
-                ]
-            }
-            with httpx.Client() as client_http:
-                resp = client_http.post(
-                    f"{ts_base_url}/internal/orders",
-                    json=payload_data,
-                    headers=headers,
-                    timeout=10.0
+            order_dto = schemas.OrderCreate(
+                    business_id=business_id, 
+                    customer_whatsapp_id=customer_whatsapp_id,
+                    items = items
                 )
-                if resp.status_code == 200:
-                    order = resp.json()
-                    return {
-                        "status": "success",
-                        "order_id": order["id"],
-                        "total_amount": order["total_amount"],
-                        "order_status": order["status"],
-                        "message": f"Order {order['id']} placed successfully. Total amount is NGN {order['total_amount']}."
-                    }
+            try:
+                order = await order_service.create_order(order_dto)
+        
+                return {
+                    "status": "success",
+                    "order_id": order.id,
+                    "total_amount": order.total_amount,
+                    "order_status": order.status,
+                    "message": f"Order {order.id} placed successfully. Total amount is NGN {order.total_amount}."
+                }
+            except Exception as ex:
+                raise ex
                 return {"status": "error", "message": resp.text}
         except Exception as e:
             return {"status": "error", "message": f"Failed to place order: {str(e)}"}
 
     async def create_payment_virtual_account(order_id: int) -> dict:
+        """Generate a payment virtual account for the specified order.
+
+        If the order already has an associated virtual account, returns that data.
+        Otherwise, it triggers the payment service to generate a new account and
+        updates the action payload to prompt the customer to pay.
+        """
         nonlocal action_payload
         try:
             order_service = OrderService(db)
             order = await order_service.get_order(order_id)
             if not order:
                 return {"status": "error", "message": f"Order with ID {order_id} not found."}
-            
-            payment_service = PaymentService(db)
+            # payment_service = PaymentService(db)
             payment = await payment_service.create_payment(order_id, order.total_amount)
-            
             if payment.virtual_account:
                 account_data = {
                     "account_number": payment.virtual_account.account_number,
@@ -428,9 +473,9 @@ async def whatsapp_webhook(
             else:
                 account_data = await payment_service.generate_payment_virtual_account(
                     payment.id,
-                    order.customer_name or "Customer"
+                    order.customer_whatsapp_id or "Customer"
                 )
-                
+
             action_payload = {
                 "type": "COLLECT_PAYMENT",
                 "amount": int(payment.amount),
@@ -441,21 +486,28 @@ async def whatsapp_webhook(
             return {
                 "status": "success",
                 "payment_reference": payment.reference,
-                "account_number": account_data["account_number"],
-                "account_name": account_data["account_name"],
-                "bank_name": account_data["bank_name"],
+                "account_number": account_data.get("account_number", ""),
+                "account_name": account_data.get("account_name", "Paymate Ai"),
+                "bank_name": account_data.get("bank_name", "Wema Bank"),
                 "amount": payment.amount,
                 "currency": "NGN"
             }
         except BadRequestError as e:
+            logger.error("Bad request while creating virtual account for order %s: %s", order_id, e, exc_info=True)
             return {"status": "error", "message": "Invalid request to generate virtual account"}
         except Exception as e:
+            logger.error("Unexpected error while creating virtual account for order %s: %s", order_id, e, exc_info=True)
             return {"status": "error", "message": f"Failed to generate virtual account: {str(e)}"}
 
     async def verify_payment_status(reference: str = None) -> dict:
+        """Verify the status of a payment and optionally update the action payload.
+
+        If no reference is provided, it finds the latest pending payment for the
+        current business and verifies that one. When the payment is successful, it
+        sets an action payload so the caller can react to the completed payment.
+        """
         nonlocal action_payload
         try:
-            payment_service = PaymentService(db)
             if not reference:
                 from models.payment import Payment
                 from models.order import Order
@@ -512,7 +564,7 @@ async def whatsapp_webhook(
             tools_list = [get_business_details, search_products, search_products_by_name, place_order, create_payment_virtual_account, verify_payment_status] if state not in ["KYC_NAME", "KYC_EMAIL", "INTENT_SELECTION"] else None
 
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model=GEMINI_MODEL,
                 contents=current_messages,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
@@ -534,9 +586,11 @@ async def whatsapp_webhook(
                     
                     try:
                         if name == "search_products":
-                            result = search_products(**args)
+                            result = await search_products(**args)
+                        elif name == "search_products_by_name":
+                            result = await search_products_by_name(**args)
                         elif name == "place_order":
-                            result = place_order(**args)
+                            result = await place_order(**args)
                         elif name == "create_payment_virtual_account":
                             result = await create_payment_virtual_account(**args)
                         elif name == "verify_payment_status":
@@ -558,7 +612,7 @@ async def whatsapp_webhook(
                 current_messages.append(types.Content(role="user", parts=response_parts))
 
                 response = client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model=GEMINI_MODEL,
                     contents=current_messages,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
@@ -582,15 +636,53 @@ async def whatsapp_webhook(
             pass
 
     if not ai_reply:
+        tools_list = [get_business_details, search_products, search_products_by_name, place_order, create_payment_virtual_account, verify_payment_status] if state not in ["KYC_NAME", "KYC_EMAIL", "INTENT_SELECTION"] else None
+        import inspect
+        from typing import get_type_hints
+
+        def function_to_openai_schema(func) -> dict:
+            sig = inspect.signature(func)
+            hints = get_type_hints(func)
+            properties = {}
+            required = []
+            type_map = {str: "string", int: "integer", float: "number", bool: "boolean"}
+
+            for name, param in sig.parameters.items():
+                if name == "self":
+                    continue
+                py_type = hints.get(name, str)
+                properties[name] = {"type": type_map.get(py_type, "string")}
+                if param.default is inspect.Parameter.empty:
+                    required.append(name)
+
+            return {
+                "type": "function",
+                "function": {
+                    "name": func.__name__,
+                    "description": (func.__doc__ or "").strip(),
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required
+                    }
+                }
+            }
+
+        openrouter_tools = [function_to_openai_schema(f) for f in [
+            get_business_details, search_products, search_products_by_name,
+            place_order, create_payment_virtual_account, verify_payment_status
+        ]]
+        
         try:
-            ai_reply = await call_tier3_openrouter(openai_messages, system_instruction)
-        except Exception:
+            ai_reply = await call_tier3_openrouter(openai_messages, system_instruction, openrouter_tools)
+        except Exception as e:
             FAILURE_TRACKER[session_key] = FAILURE_TRACKER.get(session_key, 0) + 1
             if FAILURE_TRACKER[session_key] >= 3:
                 return schemas.ChatResponse(
                     reply="I'm sorry, I am completely unavailable to take orders at the moment. Please try again later. Sorry for the inconvenience.",
                     action=None
                 )
+            logger.error(e)
             return schemas.ChatResponse(
                 reply="I couldn't process what you asked. Can you say that again?",
                 action=None
@@ -598,6 +690,7 @@ async def whatsapp_webhook(
 
     # Clean the reply and extract action payload if present in the text response
     ai_reply, extracted_action = extract_action_from_text(ai_reply)
+    
     if extracted_action:
         action_payload = extracted_action
 

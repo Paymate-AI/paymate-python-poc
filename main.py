@@ -1,11 +1,13 @@
 import os
 import asyncio
+import logging
 from fastapi import FastAPI
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 
 # Load environment variables from .env file
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
 
 from database.config import AsyncEngine, Base
 from routes.ai import router as ai_router
