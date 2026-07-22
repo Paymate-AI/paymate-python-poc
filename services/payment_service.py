@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.exc import IntegrityError
 from models.payment import Payment, VirtualAccount
 from models.order import Order
@@ -35,19 +35,37 @@ class PaymentService:
             )
             self.db.add(db_payment)
             await self.db.commit()
-            await self.db.refresh(db_payment)
+            await self.db.refresh(db_payment, attribute_names=["virtual_account"])
             return db_payment
         except IntegrityError as e:
             await self.db.rollback()
-            result = await self.db.execute(select(Payment).where(Payment.order_id == order_id))
+            result = await self.db.execute(
+            select(Payment)
+            .where(Payment.order_id == order_id)
+            .options(selectinload(Payment.virtual_account))
+        )
             return result.scalars().first()
             
 
     async def generate_payment_virtual_account(self, payment_id: int, customer_whatsapp_id: str):
-        result = await self.db.execute(select(Payment).where(Payment.id == payment_id))
+        result = await self.db.execute(
+            select(Payment)
+            .options(joinedload(Payment.virtual_account))
+            .where(Payment.id == payment_id)
+        )
         db_payment = result.scalars().first()
         if not db_payment:
             raise ValueError("Payment not found")
+
+        if db_payment.virtual_account:
+            logger.info("Virtual account already exists for payment %s", payment_id)
+            return {
+                "account_number": db_payment.virtual_account.account_number,
+                "bank_name": db_payment.virtual_account.bank_name,
+                "reference": db_payment.reference,
+                "transaction_id": db_payment.transaction_id or "",
+                "expiry_minutes": 60,
+            }
 
         # Call ALATPay to generate virtual account
         alatpay_response = await ALATPayService.generate_virtual_account(
@@ -71,8 +89,14 @@ class PaymentService:
             await self.db.commit()
             await self.db.refresh(db_payment)
         except IntegrityError as e:
-            self.db.rollback()
-            pass 
+            await self.db.rollback()
+            logger.error("Failed to persist virtual account for payment %s: %s", payment_id, e, exc_info=True)
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            logger.error("Unexpected error while persisting virtual account for payment %s: %s", payment_id, e, exc_info=True)
+            raise
+        logger.info(f"geen --- {alatpay_response}")
         return alatpay_response
 
     async def verify_and_update_payment(self, reference: str) -> Payment | None:

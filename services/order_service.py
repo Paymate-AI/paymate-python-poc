@@ -1,6 +1,6 @@
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from models.order import Order, OrderItem
 from models.product import Product
 from schemas.order import OrderCreate
@@ -43,11 +43,11 @@ class OrderService:
         return db_order
 
     async def get_order(self, order_id: int) -> Order | None:
-        result = await self.db.execute(select(Order).where(Order.id == order_id))
+        result = await self.db.execute(select(Order).where(Order.id == order_id).options(selectinload(Order.items)))
         return result.scalars().first()
     
     async def get_orders(self) -> list[Order] | None:
-        result = await self.db.execute(select(Order))
+        result = await self.db.execute(select(Order).options(selectinload(Order.items)))
         return result.scalars().all()
 
     async def update_order_status(self, order_id: int, status: str) -> Order | None:
@@ -62,7 +62,7 @@ class OrderService:
 
     async def update_inventory_on_payment(self, order_id: int):
         result = await self.db.execute(
-            select(Order).options(joinedload(Order.items)).where(Order.id == order_id)
+            select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
         )
         db_order = result.scalars().first()
         if not db_order:
