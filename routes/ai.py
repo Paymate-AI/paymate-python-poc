@@ -349,7 +349,7 @@ async def whatsapp_webhook(
         )
     else: # CUSTOMER_BROWSING
         system_instruction += (
-            f"You are PayMate AI, the store assistant for '{biz_data.name if biz_data else ""}'.\n"
+            f"You are PayMate AI, the store assistant for {biz_data.name if biz_data else ''}.\n"
             f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
             f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
             f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
