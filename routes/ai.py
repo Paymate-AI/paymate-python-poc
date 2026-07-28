@@ -515,7 +515,7 @@ async def whatsapp_webhook(
                 customer_name = payload.data.get("name") if payload.data else None
                 account_data = await payment_service.generate_payment_virtual_account(
                     payment.id,
-                    order.customer_name or "Customer"
+                    order.customer_whatsapp_id or "Customer"
                 )
 
             action_payload = {
