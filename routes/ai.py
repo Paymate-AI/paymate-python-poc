@@ -5,7 +5,8 @@ import httpx
 import inspect
 import asyncio
 import dependencies
-from typing import Annotated, Optional
+from typing import Annotated, Optional, List
+from pydantic import BaseModel, Field
 from fastapi import HTTPException, status, APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -296,6 +297,28 @@ async def whatsapp_webhook(
             "In your reply, say something welcoming and confirm you've got their name, then ask for their email (e.g., 'Nice to meet you, Divine! What is your email address?').\n"
             "If they didn't provide a valid name or their input is unclear, politely ask them to state their name clearly."
         )
+    elif state == "ADD_ITEM_NAME":
+        item_name = payload.data.get("pendingItemName") if payload.data else None
+        system_instruction = (
+            "You are a catalog assistant helping a business owner add a new product.\n"
+            "Your task is to extract the product name from the user's message. The user may describe it in a sentence like 'The name of the new item is Nike Predator Shoes' or 'add Nike Predator Shoes' — extract only the product name itself.\n"
+            "Once you extract the name, respond with a friendly confirmation message such as:\n"
+            "  'Got it! *<product name>* has been noted. Now, what is the price of this item? (numbers only, e.g. 500 or 1500.50)'\n"
+            "Then append the action block on a new line:\n"
+            '{"type": "SET_ITEM_NAME", "payload": {"name": "<extracted product name>"}}\n\n'
+            "If you cannot identify a valid product name, politely ask the user to state just the product name (e.g. 'Nike Predator Shoes')."
+        )
+    elif state == "ADD_ITEM_PRICE":
+        item_name = payload.data.get("pendingItemName", "the item") if payload.data else "the item"
+        system_instruction = (
+            f"You are a catalog assistant helping a business owner set the price for *{item_name}*.\n"
+            "Your task is to extract a numeric price from the user's message. The user may say things like '5000', 'NGN 5000', 'five thousand naira', 'the price is 1500.50' — extract the numeric value only.\n"
+            "Once you extract the price, respond with a friendly confirmation such as:\n"
+            f"  'Got it! The price for *{item_name}* is *NGN <price>*. What is the stock quantity? (numbers only, e.g. 10 or 100)'\n"
+            "Then append the action block on a new line:\n"
+            '{"type": "SET_ITEM_PRICE", "payload": {"price": <numeric price as a number, not a string>}}\n\n'
+            "If you cannot identify a valid numeric price, politely ask the user to enter just the price as a number (e.g. 750)."
+        )
     elif state == "KYC_EMAIL":
         user_name = payload.data.get("name", "there") if payload.data else "there"
         system_instruction += (
@@ -305,11 +328,16 @@ async def whatsapp_webhook(
             "If they provided an email (e.g., 'my email is divine@example.com', 'divine@example.com', etc.), extract it.\n\n"
             "Additionally, look at the very beginning of the chat history (the first user message before name/email questions).\n"
             "If the user initially expressed a specific intent (like wanting to buy products, search for a shop, register a business, or manage a catalog):\n"
-            f"- Acknowledge that request in your reply (e.g., 'You are all set, {user_name}! I saw you wanted to buy shoes, so I am triggering the service finder for you.').\n"
-            "- Return the action with a 'next_command' in the payload:\n"
-            '  {"type": "SET_KYC_EMAIL", "payload": {"email": "<extracted email>", "next_command": "<command_name>"}}\n'
-            "  Where <command_name> is one of: 'find_service' (if they want to buy/browse/search), 'register_business' (if they want to sell/register), or 'manage_catalog' (if they want to add/remove products).\n"
-            f"If they did not express any specific intent initially, just reply confirming they are set up (e.g., 'You are all set, {user_name}!'), and return:\n"
+            f"- You MUST acknowledge that intent AND transition the user in a SINGLE message. Rules:\n"
+            f"  * If they want to register a business: your reply MUST confirm they are set up. "
+            f"Use EXACTLY this format: 'You are all set, {user_name}! Let\\'s get your business set up.'\n"
+            f"  * If they want to search, buy, or browse products (e.g., 'I want to buy shoes', 'I want to buy shoes from shop XYZ'), say: 'You are all set, {user_name}! Let me find those products for you...'\n"
+            "- You MUST return the action JSON block with a 'next_command' in the payload:\n"
+            "  * If they want to register a business: {\"type\": \"SET_KYC_EMAIL\", \"payload\": {\"email\": \"<extracted email>\", \"next_command\": \"register_business\"}}\n"
+            "  * If they want to search or buy products, infer the product search term (e.g., 'shoes') and any shop/business code (e.g., 'XYZ' or null) and return:\n"
+            "    {\"type\": \"SET_KYC_EMAIL\", \"payload\": {\"email\": \"<extracted email>\", \"next_command\": \"search_product\", \"search_query\": \"<inferred product name>\", \"business_code\": \"<inferred business code or null>\"}}\n"
+            "  * If they want to manage catalog: {\"type\": \"SET_KYC_EMAIL\", \"payload\": {\"email\": \"<extracted email>\", \"next_command\": \"manage_catalog\"}}\n"
+            f"If they did not express any specific intent initially, reply confirming they are set up (e.g., 'You are all set, {user_name}!'), and return:\n"
             '  {"type": "SET_KYC_EMAIL", "payload": {"email": "<extracted email>"}}\n\n'
             "If they didn't provide a valid email, politely ask them to try again with a valid email address."
         )
@@ -324,13 +352,16 @@ async def whatsapp_webhook(
             "- delete_business: Trigger the business deletion workflow.\n"
             "- main_menu: Go back to the main menu.\n\n"
             "Analyze the user's input to determine their intent:\n"
-            "1. If they express intent to buy products, search for a shop, or browse goods (e.g. 'I want to buy XYZ', 'how do I find a store', etc.), "
-            "respond politely saying you will trigger the service finder, and return the action payload:\n"
-            '{"type": "TRIGGER_COMMAND", "payload": {"command": "find_service"}}\n'
-            "2. If they want to register or set up a business (e.g. 'register my store', 'sell on paymate', etc.), "
+            "1. If they express intent to buy products, search for a shop, or browse goods (e.g. 'I want to buy shoes', 'search for shoes from XYZ', etc.):\n"
+            "   Acknowledge that you are searching/finding it for them, infer the product search query (e.g. 'shoes') and any shop/business code (e.g. 'XYZ' or null), and return the action payload:\n"
+            "   {\"type\": \"SEARCH_PRODUCT\", \"payload\": {\"query\": \"<inferred product query>\", \"business_code\": \"<inferred business code or null>\"}}\n"
+            "2. If they just say they want to find stores or browse shops generally without a product name (e.g., 'find a store', 'show me shops'):\n"
+            "   Respond politely saying you will trigger the service finder, and return the action payload:\n"
+            "   {\"type\": \"TRIGGER_COMMAND\", \"payload\": {\"command\": \"find_service\"}}\n"
+            "3. If they want to register or set up a business (e.g. 'register my store', 'sell on paymate', etc.), "
             "respond saying you will start registration, and return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "register_business"}}\n'
-            "3. If they want to manage their store catalog generally (e.g. 'manage catalog'), "
+            "4. If they want to manage their store catalog generally (e.g. 'manage catalog'), "
             "respond saying you are opening catalog manager, and return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "manage_catalog"}}\n'
             "  - If they explicitly want to add a product or item (e.g. 'add item', 'add product', 'new product'), "
@@ -342,18 +373,28 @@ async def whatsapp_webhook(
             "  - If they explicitly want to view their catalog (e.g. 'view catalog', 'show products'), "
             "return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "view_catalog"}}\n'
-            "4. If they want to delete their business (e.g. 'delete my business'), "
+            "5. If they want to delete their business (e.g. 'delete my business'), "
             "respond saying you are initiating deletion, and return the action payload:\n"
             '{"type": "TRIGGER_COMMAND", "payload": {"command": "delete_business"}}\n'
-            "5. If they are just chatting or greeting you, respond contextually to guide them about the options available."
+            "6. If they are just chatting or greeting you, respond contextually to guide them about the options available."
         )
     else: # CUSTOMER_BROWSING
         system_instruction += (
             f"You are PayMate AI, the store assistant for {biz_data.name if biz_data else ''}.\n"
+            f"When listing products or recommending items to the customer, always explicitly mention the name of the business you are listing the products from (i.e., '{biz_data.name}').\n"
             f"You have access to tools/functions to look up business information, search for products, place orders, create virtual accounts, and verify payment statuses.\n"
             f"Always use the appropriate tools to look up business and product details, submit orders, and obtain payment details. Do not guess or fabricate information.\n"
             f"When an order is created, tell the customer the order ID and amount, and then ask or offer to create a virtual payment account.\n"
             f"When a payment virtual account is created, present the bank name, account number, account name, amount, and the payment_reference clearly to the customer."
+        )
+
+    # Ensure structured actions are always returned at the end of the response when applicable
+    if state in ["KYC_NAME", "KYC_EMAIL", "INTENT_SELECTION", "ADD_ITEM_NAME", "ADD_ITEM_PRICE"]:
+        system_instruction += (
+            "\n\nCRITICAL REQUIRED FORMATTING RULES:\n"
+            "If you are triggering an action/payload (e.g. SET_KYC_NAME, SET_KYC_EMAIL, SEARCH_PRODUCT, TRIGGER_COMMAND, SET_ITEM_NAME, SET_ITEM_PRICE), you MUST append the exact JSON block at the very end of your response text (after your friendly message/reply). Do not wrap the JSON block in markdown backticks (no ```json). Keep the JSON block on a new line. For example:\n"
+            "Nice to meet you, John! What is your email?\n"
+            '{"type": "SET_KYC_NAME", "payload": {"name": "John"}}'
         )
 
     action_payload = None
@@ -471,9 +512,10 @@ async def whatsapp_webhook(
                     "expiry_minutes": 60
                 }
             else:
+                customer_name = payload.data.get("name") if payload.data else None
                 account_data = await payment_service.generate_payment_virtual_account(
                     payment.id,
-                    order.customer_whatsapp_id or "Customer"
+                    order.customer_name or "Customer"
                 )
 
             action_payload = {
