@@ -13,6 +13,7 @@ This service acts as the AI processing layer for a WhatsApp commerce bot. It rec
 - [Running Locally](#running-locally)
 - [Deployment](#deployment)
 - [Live deployment](#live-deployment)
+- [Demo video](#demo-video)
 - [API Endpoints](#api-endpoints)
 - [Security and data handling note](#security-and-data-handling-note)
 
@@ -144,6 +145,10 @@ Use the sections below to add the live URLs once they are ready.
 - WhatsApp bot test link: [WhatsApp bot](https://wa.me/+2347033814063)
 
 ---
+
+## Demo Video
+Here is a demo video of the Business owner onboarding and the customer flow
+- demo video: [demo-video-url](https://drive.google.com/file/d/1Hxio2OCGqrGqsfAp-1tt77MY6lY7l_tq/view?usp=sharing)
 
 ## API Endpoints
 
