@@ -568,10 +568,11 @@ async def whatsapp_webhook(
                 # else:
                 #     return {"status": "error", "message": "No pending payment found to verify."}
 
-            payment = await payment_service.verify_and_update_payment(reference)
-            if not payment:
+            db_payment = await payment_service.get_payment_by_reference(reference)
+            if not db_payment:
                 return {"status": "error", "message": f"Payment with reference {reference} not found."}
-            
+
+            payment = await payment_service.verify_and_update_payment(db_payment.transaction_id)
             if payment.status == "successful":
                 action_payload = {
                     "type": "PAYMENT_SUCCESSFUL",
