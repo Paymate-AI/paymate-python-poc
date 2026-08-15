@@ -117,6 +117,9 @@ class PaymentService:
             created_at = db_payment.created_at
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=timezone.utc)
+            if not db_payment.transaction_id and created_at < cutoff_time:
+                db_payment.status = "Abandoned"
+                raise ValueError("transaction_id is required to verify a payment")
             verification = await ALATPayService.verify_payment(db_payment.transaction_id)
             if verification["status"] == "successful":
                 logger.info(f"Payment verification called for reference: {reference}")

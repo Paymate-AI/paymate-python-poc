@@ -285,7 +285,8 @@ async def whatsapp_webhook(
         )
     
     system_instruction = (
-        "Never invent a product ID. If the customer gives a product name, you must call search_products_by_name with the product name given by the customer to resolve it to a real ID before calling place_order"
+        "Never invent a product ID. If the customer gives a product name, you must call search_products_by_name with the product name given by the customer to resolve it to a real ID before calling place_order",
+        "Never invent a payment reference, when you are trying to verify a payment, if a reference is not given when a user wants to verify a payment then ask for the payment reference "
     )
     # Determine system instruction based on session state
     if state == "KYC_NAME":
@@ -551,20 +552,21 @@ async def whatsapp_webhook(
         nonlocal action_payload
         try:
             if not reference:
-                from models.payment import Payment
-                from models.order import Order
-                result = await db.execute(
-                    select(Payment)
-                    .join(Order)
-                    .where(Order.business_id == business_id)
-                    .where(Payment.status == "pending")
-                    .order_by(Payment.created_at.desc())
-                )
-                latest_pending = result.scalars().first()
-                if latest_pending:
-                    reference = latest_pending.reference
-                else:
-                    return {"status": "error", "message": "No pending payment found to verify."}
+                return {"status": "error", "message": "Payment reference is required"}
+                # from models.payment import Payment
+                # from models.order import Order
+                # result = await db.execute(
+                #     select(Payment)
+                #     .join(Order)
+                #     .where(Order.business_id == business_id)
+                #     .where(Payment.status == "pending")
+                #     .order_by(Payment.created_at.desc())
+                # )
+                # latest_pending = result.scalars().first()
+                # if latest_pending:
+                #     reference = latest_pending.reference
+                # else:
+                #     return {"status": "error", "message": "No pending payment found to verify."}
 
             payment = await payment_service.verify_and_update_payment(reference)
             if not payment:

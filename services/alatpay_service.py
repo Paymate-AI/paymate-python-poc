@@ -85,8 +85,8 @@ class ALATPayService:
 
     async def verify_payment(transaction_id: str) -> dict:
         """Verify payment status via ALATPay API using the transaction ID"""
-        if not transaction_id:
-            raise ValueError("transaction_id is required to verify a payment")
+        # if not transaction_id:
+        #     raise ValueError("transaction_id is required to verify a payment")
 
         # ALATPay requires businessId as a query parameter
         url = f"{ALATPayService.BASE_URL}/bank-transfer/api/v1/bankTransfer/transactions/{transaction_id}"

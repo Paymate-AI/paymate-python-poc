@@ -43,8 +43,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Paymate Commerce API",
     description="Complete API for Paymate commerce platform including users, products, orders, and payments with ALATPay integration",
-    version="1.0.0"
-    # lifespan=lifespan
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Register routes
