@@ -285,7 +285,7 @@ async def whatsapp_webhook(
         )
     
     system_instruction = (
-        "Never invent a product ID. If the customer gives a product name, you must call search_products_by_name with the product name given by the customer to resolve it to a real ID before calling place_order",
+        "Never invent a product ID. If the customer gives a product name, you must call search_products_by_name with the product name given by the customer to resolve it to a real ID before calling place_order\n"
         "Never invent a payment reference, when you are trying to verify a payment, if a reference is not given when a user wants to verify a payment then ask for the payment reference "
     )
     # Determine system instruction based on session state
