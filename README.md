@@ -141,7 +141,7 @@ gcloud run deploy whatsapp-ai-service \
 
 Use the sections below to add the live URLs once they are ready.
 
-- Hosted API: [paymate-ai-payment-service docs](https://python-service-533396938460.africa-south1.run.app/docs)
+- Hosted API: [paymate-ai-payment-service docs](https://paymate-python-poc-1064274221099.europe-west1.run.app/docs)
 - WhatsApp bot test link: [WhatsApp bot](https://wa.me/+2347033814063)
 
 ---
