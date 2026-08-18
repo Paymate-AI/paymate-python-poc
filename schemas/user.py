@@ -13,6 +13,16 @@ class UserWithBusinessCreate(BaseModel):
     user: UserCreate
     business: "BusinessCreate"
 
+class UserWithBusinessResponse(BaseModel):
+    id: int
+    name: str
+    phone: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    business: Optional[BusinessResponse] = None
+
+    class Config:
+        from_attributes = True
 
 class UserResponse(BaseModel):
     id: int
@@ -20,7 +30,6 @@ class UserResponse(BaseModel):
     phone: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-    business: Optional[BusinessResponse] = None
 
     class Config:
         from_attributes = True

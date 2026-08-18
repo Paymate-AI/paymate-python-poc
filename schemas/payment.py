@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
@@ -27,4 +27,15 @@ class PaymentResponse(BaseModel):
     virtual_account: Optional[VirtualAccountResponse] = None
 
     class Config:
+        from_attributes = True
+
+class VerifyPaymentResponse(BaseModel):
+    payment_id: int = Field(validation_alias="id")
+    order_id: int
+    amount: float
+    reference: str
+    status: str
+    virtual_account: Optional[VirtualAccountResponse] = None
+
+    class config:
         from_attributes = True

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Annotated, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.config import AsyncSessionLocal, get_async_db
-from schemas.payment import PaymentResponse
+from schemas.payment import PaymentResponse, VerifyPaymentResponse
 from services.payment_service import PaymentService
 from services.order_service import OrderService
 from services.alatpay_service import BadRequestError
@@ -35,7 +35,7 @@ async def create_payment(
         payment = await payment_service.create_payment(order_id, order.total_amount)
 
     
-        payment = await payment_service.generate_payment_virtual_account(
+        virtual_account = await payment_service.generate_payment_virtual_account(
             payment.id,
             order.customer_whatsapp_id
         )
@@ -47,12 +47,12 @@ async def create_payment(
         logger.error("An unexpected error occurred", exc_info=True)
         raise HTTPException(status_code=500, detail="An Unexpected error occured")
 
-    return payment
+    return virtual_account
 
 
 @router.post(
     "/verify/{reference}",
-    response_model=PaymentResponse,
+    response_model=VerifyPaymentResponse,
     summary="Verify a payment",
     description="Verify payment status via ALATPay using the payment reference"
 )
@@ -94,6 +94,20 @@ async def get_pending_payments(
     payments = await payment_service.get_pending_payments()
     return payments
 
+@router.get(
+    "/", 
+    response_model=List[PaymentResponse], 
+    summary="Get all payments", 
+    description="Return a list of all payments"
+)
+async def get_all_payments(
+    payment_service: Annotated[PaymentService, Depends(get_payment_service)],
+    skip : int =0,
+    limit : int =10
+):
+    payments = await payment_service.get_all_payments(skip, limit)
+    return payments
+
 
 async def reconcile_payments_task():
     """Background task to periodically reconcile pending payments"""
@@ -119,3 +133,4 @@ def _reconcile_once(payment_service):
             asyncio.run(payment_service.verify_and_update_payment(payment.reference))
         except Exception as e:
             logger.error(f"Failed to verify payment: {payment.reference} - {e}")
+
