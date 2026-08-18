@@ -117,8 +117,10 @@ class ALATPayService:
                 raise
 
         data = alat_response.get("data") or {}
+        print(data)
+        payment_status = data.get("status", "")
         return {
-            "status": data.get("paymentStatus", "pending"),
+            "status": "success" if payment_status == "completed" else payment_status,
             "reference": data.get("reference", ""),
             "amount": float(data.get("amount", 0)),
             "currency": data.get("currency", ""),

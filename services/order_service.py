@@ -39,7 +39,7 @@ class OrderService:
 
         self.db.add(db_order)
         await self.db.commit()
-        await self.db.refresh(db_order)
+        await self.db.refresh(db_order, attribute_names=["items"])
         return db_order
 
     async def get_order(self, order_id: int) -> Order | None:

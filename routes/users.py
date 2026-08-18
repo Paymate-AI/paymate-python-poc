@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Annotated
-from schemas.user import UserResponse, UserWithBusinessCreate
+from schemas.user import UserResponse, UserWithBusinessCreate, UserWithBusinessResponse
 from services.user_service import UserService
 from dependencies import get_user_service
 
@@ -9,7 +9,7 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 @router.post(
     "/with-business",
-    response_model=UserResponse,
+    response_model=UserWithBusinessResponse,
     status_code=201,
     summary="Create a new user with a business",
     description="Create a new user and their associated business in one request"

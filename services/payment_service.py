@@ -121,7 +121,7 @@ class PaymentService:
                 db_payment.status = "Abandoned"
                 raise ValueError("transaction_id is required to verify a payment")
             verification = await ALATPayService.verify_payment(db_payment.transaction_id)
-            if verification["status"] == "successful":
+            if verification["status"] == "success":
                 logger.info(f"Payment verification called for reference: {reference}")
                 db_payment.status = "successful"
                 db_payment.gateway_response = str(verification)
@@ -143,15 +143,15 @@ class PaymentService:
             logger.error(f"Unexpected error verifying {reference}: {e}")
 
         await self.db.commit()
-        await self.db.refresh(db_payment)
+        await self.db.refresh(db_payment, attribute_names=["virtual_account"])
         return db_payment
 
     async def get_payment_by_reference(self, reference: str) -> Payment | None:
-        result = await self.db.execute(select(Payment).where(Payment.reference == reference))
+        result = await self.db.execute(select(Payment).options(selectinload(Payment.virtual_account)).where(Payment.reference == reference))
         return result.scalars().first()
 
     async def get_pending_payments(self) -> list[Payment]:
-        result = await self.db.execute(select(Payment).where(Payment.status == "pending"))
+        result = await self.db.execute(select(Payment).options(selectinload(Payment.virtual_account)).where(Payment.status == "pending"))
         return result.scalars().all()
     
     async def get_pending_payments_with_orders(self) -> list[Payment]:
@@ -195,4 +195,8 @@ class PaymentService:
                 logger.info(f"message sent to customer with id {customer_id}")
             except httpx.HTTPStatusError as e:
                 logger.error(f"HTTP error: {e.response.text}")
+
+    async def get_all_payments(self, skip=0, limit=10):
+        results = await self.db.execute(select(Payment).options(selectinload(Payment.virtual_account)).order_by(Payment.id.desc()).offset(skip).limit(limit))
+        return results.scalars().all()
                 
